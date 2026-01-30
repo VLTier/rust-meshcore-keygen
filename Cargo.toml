@@ -1,0 +1,51 @@
+[package]
+name = "meshcore-keygen"
+version = "1.0.0"
+edition = "2021"
+description = "High-performance MeshCore Ed25519 vanity key generator with CPU and Metal GPU support"
+license = "MIT"
+
+[dependencies]
+# Ed25519 cryptography
+curve25519-dalek = { version = "4", features = ["digest"] }
+sha2 = "0.10"
+rand = "0.8"
+
+# CLI and output
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+chrono = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Parallelism
+rayon = "1.8"
+num_cpus = "1.16"
+crossbeam-channel = "0.5"
+
+# Progress and formatting
+indicatif = { version = "0.17", features = ["rayon"] }
+console = "0.15"
+
+# System info
+sysinfo = "0.30"
+
+# Metal GPU (macOS only)
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "0.29"
+objc = "0.2"
+block = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.release-fast]
+inherits = "release"
+debug = false
+strip = true
