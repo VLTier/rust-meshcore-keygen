@@ -36,7 +36,7 @@ indicatif = { version = "0.17", features = ["rayon"] }
 console = "0.15"
 
 # System info
-sysinfo = "0.30"
+sysinfo = "0.38"
 
 # Cross-platform GPU (optional)
 wgpu = { version = "0.19", optional = true }
