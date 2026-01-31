@@ -5,80 +5,33 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: meshcore-keygen
 
-permissions:
-  contents: write
-
 jobs:
-  # Create the release first
-  create-release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-      release_id: ${{ steps.create_release.outputs.id }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Get version from tag
-        id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-
-      - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: Release ${{ steps.get_version.outputs.VERSION }}
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # Build binaries for all platforms
   build-release:
-    name: Build (${{ matrix.name }})
-    needs: create-release
+    name: Build and upload release assets
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64
           - name: linux-x86_64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact_name: meshcore-keygen
             asset_name: meshcore-keygen-linux-x86_64
 
-          # Linux ARM64
-          - name: linux-aarch64
-            os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            artifact_name: meshcore-keygen
-            asset_name: meshcore-keygen-linux-aarch64
-            cross: true
-
-          # macOS x86_64 (Intel)
-          - name: macos-x86_64
-            os: macos-latest
-            target: x86_64-apple-darwin
-            artifact_name: meshcore-keygen
-            asset_name: meshcore-keygen-macos-x86_64
-
-          # macOS ARM64 (Apple Silicon)
           - name: macos-aarch64
             os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: meshcore-keygen
             asset_name: meshcore-keygen-macos-aarch64
 
-          # Windows x86_64
           - name: windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -86,20 +39,14 @@ jobs:
             asset_name: meshcore-keygen-windows-x86_64.exe
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v5
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-action@stable
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
-
-      - name: Install cross-compilation tools (Linux ARM64)
-        if: matrix.cross == true
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -109,64 +56,40 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-${{ matrix.target }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-cargo-release-
 
-      - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Strip binary (Linux/macOS)
-        if: runner.os != 'Windows'
+      - name: Build (release)
         run: |
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            aarch64-linux-gnu-strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }} || true
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Package artifact
+        run: |
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            powershell -Command "Compress-Archive -Path target/${{ matrix.target }}/release/${{ matrix.artifact_name }} -DestinationPath $Env:GITHUB_WORKSPACE/${{ matrix.asset_name }}.zip"
           else
-            strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }} || true
+            tar -czf $GITHUB_WORKSPACE/${{ matrix.asset_name }}.tar.gz -C target/${{ matrix.target }}/release ${matrix.artifact_name}
           fi
 
-      - name: Create archive (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: |
-          cd target/${{ matrix.target }}/release
-          tar -czvf ../../../${{ matrix.asset_name }}.tar.gz ${{ matrix.artifact_name }}
-          cd ../../..
-
-      - name: Create archive (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Compress-Archive -Path target/${{ matrix.target }}/release/${{ matrix.artifact_name }} -DestinationPath ${{ matrix.asset_name }}.zip
-
-      - name: Upload Release Asset (Linux/macOS)
-        if: runner.os != 'Windows'
+      - name: Create GitHub release asset
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.ref_name }}
-          files: ${{ matrix.asset_name }}.tar.gz
+          files: |
+            $GITHUB_WORKSPACE/${{ matrix.asset_name }}.tar.gz
+            $GITHUB_WORKSPACE/${{ matrix.asset_name }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload Release Asset (Windows)
-        if: runner.os == 'Windows'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ github.ref_name }}
-          files: ${{ matrix.asset_name }}.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # Generate checksums for all release assets
   checksums:
-    name: Generate Checksums
+    name: Generate checksums
     needs: build-release
     runs-on: ubuntu-latest
     steps:
-      - name: Download all release assets
+      - name: Download assets
         uses: robinraju/release-downloader@v1
         with:
           tag: ${{ github.ref_name }}
           fileName: "*"
-          out-file-path: "release-assets"
+          out-file-path: release-assets
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate SHA256 checksums
