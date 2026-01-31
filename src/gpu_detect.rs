@@ -197,7 +197,7 @@ pub fn is_opencl_available() -> bool {
 /// Get list of all available GPU backends, sorted by preference (native first)
 pub fn get_available_backends() -> Vec<GpuBackend> {
     let mut backends = Vec::new();
-    
+
     // Native backends first (highest priority)
     if is_metal_available() {
         backends.push(GpuBackend::Metal);
@@ -208,16 +208,16 @@ pub fn get_available_backends() -> Vec<GpuBackend> {
     if is_vulkan_available() {
         backends.push(GpuBackend::Vulkan);
     }
-    
+
     // OpenCL as fallback (lower priority)
     if is_opencl_available() {
         backends.push(GpuBackend::OpenCL);
     }
-    
+
     if backends.is_empty() {
         backends.push(GpuBackend::None);
     }
-    
+
     // Sort by priority (native first, OpenCL last)
     backends.sort();
     backends
@@ -232,7 +232,7 @@ pub fn get_best_backend() -> GpuBackend {
     // 3. Vulkan (cross-platform native via wgpu)
     // 4. OpenCL (universal fallback)
     // 5. None (CPU only)
-    
+
     if is_metal_available() {
         return GpuBackend::Metal;
     }
@@ -251,13 +251,13 @@ pub fn get_best_backend() -> GpuBackend {
 /// Get the best backend for a specific GPU vendor
 pub fn get_best_backend_for_vendor(vendor: &str) -> GpuBackend {
     let vendor_lower = vendor.to_lowercase();
-    
+
     if vendor_lower.contains("apple") {
         if is_metal_available() {
             return GpuBackend::Metal;
         }
     }
-    
+
     if vendor_lower.contains("nvidia") {
         // Prefer CUDA for NVIDIA, fall back to OpenCL
         if is_cuda_available() {
@@ -267,7 +267,7 @@ pub fn get_best_backend_for_vendor(vendor: &str) -> GpuBackend {
             return GpuBackend::OpenCL;
         }
     }
-    
+
     if vendor_lower.contains("amd") || vendor_lower.contains("ati") {
         // AMD: prefer Vulkan (via wgpu), fall back to OpenCL
         if is_vulkan_available() {
@@ -277,7 +277,7 @@ pub fn get_best_backend_for_vendor(vendor: &str) -> GpuBackend {
             return GpuBackend::OpenCL;
         }
     }
-    
+
     if vendor_lower.contains("intel") {
         // Intel: prefer Vulkan (via wgpu), fall back to OpenCL
         if is_vulkan_available() {
@@ -287,7 +287,7 @@ pub fn get_best_backend_for_vendor(vendor: &str) -> GpuBackend {
             return GpuBackend::OpenCL;
         }
     }
-    
+
     // Unknown vendor: use best available
     get_best_backend()
 }
@@ -300,20 +300,66 @@ pub fn is_gpu_available() -> bool {
 /// Print GPU detection summary
 pub fn print_gpu_summary() {
     println!("GPU Detection Summary (native first, OpenCL fallback):");
-    println!("  Metal:   {} {}", 
-             if is_metal_available() { "✓ Available" } else { "✗ Not available" },
-             if is_metal_available() { "(native)" } else { "" });
-    println!("  CUDA:    {} {}", 
-             if is_cuda_available() { "✓ Available" } else { "✗ Not available" },
-             if is_cuda_available() { "(native)" } else { "" });
-    println!("  Vulkan:  {} {}", 
-             if is_vulkan_available() { "✓ Available" } else { "✗ Not available" },
-             if is_vulkan_available() { "(native)" } else { "" });
-    println!("  OpenCL:  {} {}", 
-             if is_opencl_available() { "✓ Available" } else { "✗ Not available" },
-             if is_opencl_available() { "(fallback)" } else { "" });
-    println!("  AMD GPU: {}", if is_amd_available() { "✓ Detected" } else { "✗ Not detected" });
-    println!("  Intel:   {}", if is_intel_gpu_available() { "✓ Detected" } else { "✗ Not detected" });
+    println!(
+        "  Metal:   {} {}",
+        if is_metal_available() {
+            "✓ Available"
+        } else {
+            "✗ Not available"
+        },
+        if is_metal_available() { "(native)" } else { "" }
+    );
+    println!(
+        "  CUDA:    {} {}",
+        if is_cuda_available() {
+            "✓ Available"
+        } else {
+            "✗ Not available"
+        },
+        if is_cuda_available() { "(native)" } else { "" }
+    );
+    println!(
+        "  Vulkan:  {} {}",
+        if is_vulkan_available() {
+            "✓ Available"
+        } else {
+            "✗ Not available"
+        },
+        if is_vulkan_available() {
+            "(native)"
+        } else {
+            ""
+        }
+    );
+    println!(
+        "  OpenCL:  {} {}",
+        if is_opencl_available() {
+            "✓ Available"
+        } else {
+            "✗ Not available"
+        },
+        if is_opencl_available() {
+            "(fallback)"
+        } else {
+            ""
+        }
+    );
+    println!(
+        "  AMD GPU: {}",
+        if is_amd_available() {
+            "✓ Detected"
+        } else {
+            "✗ Not detected"
+        }
+    );
+    println!(
+        "  Intel:   {}",
+        if is_intel_gpu_available() {
+            "✓ Detected"
+        } else {
+            "✗ Not detected"
+        }
+    );
     println!("  Best:    {}", get_best_backend());
 }
 
@@ -333,20 +379,38 @@ mod tests {
     #[test]
     fn test_gpu_backend_ordering() {
         // Verify native backends have higher priority (lower ord value) than OpenCL
-        assert!(GpuBackend::Metal < GpuBackend::OpenCL, "Metal should have higher priority than OpenCL");
-        assert!(GpuBackend::Cuda < GpuBackend::OpenCL, "CUDA should have higher priority than OpenCL");
-        assert!(GpuBackend::Vulkan < GpuBackend::OpenCL, "Vulkan should have higher priority than OpenCL");
-        assert!(GpuBackend::OpenCL < GpuBackend::None, "OpenCL should have higher priority than None");
+        assert!(
+            GpuBackend::Metal < GpuBackend::OpenCL,
+            "Metal should have higher priority than OpenCL"
+        );
+        assert!(
+            GpuBackend::Cuda < GpuBackend::OpenCL,
+            "CUDA should have higher priority than OpenCL"
+        );
+        assert!(
+            GpuBackend::Vulkan < GpuBackend::OpenCL,
+            "Vulkan should have higher priority than OpenCL"
+        );
+        assert!(
+            GpuBackend::OpenCL < GpuBackend::None,
+            "OpenCL should have higher priority than None"
+        );
     }
 
     #[test]
     fn test_get_available_backends() {
         let backends = get_available_backends();
-        assert!(!backends.is_empty(), "Should have at least one backend (even if None)");
-        
+        assert!(
+            !backends.is_empty(),
+            "Should have at least one backend (even if None)"
+        );
+
         // Verify backends are sorted by priority (native first)
         for i in 1..backends.len() {
-            assert!(backends[i-1] <= backends[i], "Backends should be sorted by priority");
+            assert!(
+                backends[i - 1] <= backends[i],
+                "Backends should be sorted by priority"
+            );
         }
     }
 
@@ -355,13 +419,20 @@ mod tests {
         let best = get_best_backend();
         // Just verify it returns something valid
         match best {
-            GpuBackend::Metal | GpuBackend::Cuda | GpuBackend::Vulkan | 
-            GpuBackend::OpenCL | GpuBackend::None => {}
+            GpuBackend::Metal
+            | GpuBackend::Cuda
+            | GpuBackend::Vulkan
+            | GpuBackend::OpenCL
+            | GpuBackend::None => {}
         }
-        
+
         // If any GPU is available, best should not be None
         if is_gpu_available() {
-            assert_ne!(best, GpuBackend::None, "Should return a GPU backend when available");
+            assert_ne!(
+                best,
+                GpuBackend::None,
+                "Should return a GPU backend when available"
+            );
         }
     }
 
@@ -369,7 +440,7 @@ mod tests {
     fn test_is_gpu_available() {
         let available = is_gpu_available();
         let best = get_best_backend();
-        
+
         // Consistency check
         if available {
             assert_ne!(best, GpuBackend::None);
@@ -386,11 +457,14 @@ mod tests {
         let available = is_metal_available();
         if available {
             let info = get_metal_info();
-            assert!(info.is_some(), "Metal info should be available when Metal is available");
+            assert!(
+                info.is_some(),
+                "Metal info should be available when Metal is available"
+            );
             let info = info.unwrap();
             assert!(!info.name.is_empty(), "GPU name should not be empty");
             assert_eq!(info.backend, GpuBackend::Metal);
-            
+
             // On macOS with Metal, it should be the best backend
             assert_eq!(get_best_backend(), GpuBackend::Metal);
         }
@@ -431,13 +505,21 @@ mod tests {
         // Test that vendor-specific backend selection prefers native APIs
         let nvidia_backend = get_best_backend_for_vendor("NVIDIA");
         if is_cuda_available() {
-            assert_eq!(nvidia_backend, GpuBackend::Cuda, "NVIDIA should prefer CUDA");
+            assert_eq!(
+                nvidia_backend,
+                GpuBackend::Cuda,
+                "NVIDIA should prefer CUDA"
+            );
         }
-        
+
         // Apple should prefer Metal
         let apple_backend = get_best_backend_for_vendor("Apple");
         if is_metal_available() {
-            assert_eq!(apple_backend, GpuBackend::Metal, "Apple should prefer Metal");
+            assert_eq!(
+                apple_backend,
+                GpuBackend::Metal,
+                "Apple should prefer Metal"
+            );
         }
     }
 }
