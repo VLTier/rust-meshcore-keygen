@@ -28,6 +28,10 @@ pub struct WorkerPool {
     worker_handles: Vec<JoinHandle<()>>,
     #[cfg(target_os = "macos")]
     gpu_enabled: bool,
+    // Per-worker attempt counters for live stats
+    attempts_per_worker: Vec<Arc<AtomicU64>>,
+    // Optional GPU attempts counter
+    gpu_attempts: Option<Arc<AtomicU64>>,
 }
 
 impl WorkerPool {
@@ -48,6 +52,8 @@ impl WorkerPool {
             worker_handles: Vec::new(),
             #[cfg(target_os = "macos")]
             gpu_enabled: false,
+            attempts_per_worker: (0..num_workers).map(|_| Arc::new(AtomicU64::new(0))).collect(),
+            gpu_attempts: None,
         }
     }
     
@@ -56,6 +62,18 @@ impl WorkerPool {
     pub fn enable_gpu(&mut self) {
         self.gpu_enabled = true;
     }
+
+    /// Attach a GPU attempts counter so the main thread can sample GPU throughput
+    #[cfg(target_os = "macos")]
+    pub fn set_gpu_attempts(&mut self, counter: Arc<AtomicU64>) {
+        self.gpu_attempts = Some(counter);
+    }
+
+    /// Snapshot of per-worker attempt counters (cloned Arcs)
+    pub fn attempts_per_worker_snapshot(&self) -> Vec<Arc<AtomicU64>> {
+        self.attempts_per_worker.clone()
+    }
+
     
     #[cfg(not(target_os = "macos"))]
     pub fn enable_gpu(&mut self) {
@@ -81,6 +99,7 @@ impl WorkerPool {
         let result_sender = self.result_sender.clone();
         let total_attempts = self.total_attempts.clone();
         let should_stop = self.should_stop.clone();
+        let worker_attempts = self.attempts_per_worker[worker_id].clone();
         
         thread::Builder::new()
             .name(format!("keygen-worker-{}", worker_id))
@@ -90,6 +109,7 @@ impl WorkerPool {
                     &pattern_config,
                     &result_sender,
                     &total_attempts,
+                    &worker_attempts,
                     &should_stop,
                 );
             })
@@ -103,7 +123,8 @@ impl WorkerPool {
         let result_sender = self.result_sender.clone();
         let total_attempts = self.total_attempts.clone();
         let should_stop = self.should_stop.clone();
-        
+        let gpu_counter = self.gpu_attempts.clone();
+
         let handle = thread::Builder::new()
             .name("keygen-gpu-worker".to_string())
             .spawn(move || {
@@ -111,6 +132,7 @@ impl WorkerPool {
                     &pattern_config,
                     &result_sender,
                     &total_attempts,
+                    gpu_counter,
                     &should_stop,
                 ) {
                     eprintln!("GPU worker error: {}", e);
@@ -138,6 +160,7 @@ fn cpu_worker_loop(
     pattern_config: &PatternConfig,
     result_sender: &Sender<KeyInfo>,
     total_attempts: &AtomicU64,
+    worker_attempts: &Arc<AtomicU64>,
     should_stop: &AtomicBool,
 ) {
     let mut local_attempts: u64 = 0;
@@ -162,8 +185,9 @@ fn cpu_worker_loop(
             local_attempts += 1;
         }
         
-        // Update global counter periodically (reduces contention)
+        // Update global counter and per-worker counter periodically (reduces contention)
         total_attempts.fetch_add(local_attempts, Ordering::Relaxed);
+        worker_attempts.fetch_add(local_attempts, Ordering::Relaxed);
         local_attempts = 0;
         
         // Check stop condition after each batch

@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::path::PathBuf;
 use std::fs;
+use num_cpus;
 
 use crate::keygen::KeyInfo;
 use crate::pattern::{PatternConfig, PatternMode};
@@ -83,7 +84,7 @@ struct Args {
     #[arg(long, value_parser = clap::value_parser!(u8).range(2..=8))]
     vanity: Option<u8>,
 
-    /// Output directory for key files
+    /// Output directory for key files (default: current directory)
     #[arg(short, long, default_value = ".")]
     output: PathBuf,
 
@@ -91,9 +92,9 @@ struct Args {
     #[arg(long, default_value = "0")]
     max_time: u64,
 
-    /// Verify keys are valid for MeshCore (checks prefix and ECDH)
-    #[arg(long, default_value = "true")]
-    verify: bool,
+    /// Disable MeshCore verification (checks prefix and ECDH). Verification is enabled by default; pass `--no-verify` to disable.
+    #[arg(long = "no-verify", action = clap::ArgAction::SetTrue, default_value_t = false)]
+    no_verify: bool,
 
     /// Skip keys that already exist in the output directory
     #[arg(long, default_value = "true")]
@@ -106,6 +107,10 @@ struct Args {
     /// Verbose output
     #[arg(short, long)]
     verbose: bool,
+
+    /// Use nearly all CPU cores (on macOS use total cores minus one). Overrides default core heuristics.
+    #[arg(long, default_value_t = false)]
+    brutal: bool,
 
     /// Run tests
     #[arg(long)]
@@ -120,17 +125,31 @@ fn main() {
         return;
     }
 
-    // Ensure output directory exists
-    if !args.output.exists() {
-        fs::create_dir_all(&args.output).expect("Failed to create output directory");
-    }
+    // Prepare output directories
+    let base_output = args.output.clone(); // root where timestamped runs will live
 
-    // Load existing keys to avoid duplicates
+    // If user did not provide an explicit output (default '.'), create a timestamped subdirectory
+    let output_dir: PathBuf = if base_output == PathBuf::from(".") {
+        let ts = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+        let newdir = base_output.join(ts);
+        fs::create_dir_all(&newdir).expect("Failed to create timestamped output directory");
+        newdir
+    } else {
+        if !base_output.exists() {
+            fs::create_dir_all(&base_output).expect("Failed to create output directory");
+        }
+        base_output.clone()
+    };
+
+    // Load existing keys to avoid duplicates. We scan the base output root (not the per-run subdir)
     let existing_keys = if args.skip_existing {
-        load_existing_keys(&args.output)
+        load_existing_keys(&base_output)
     } else {
         HashSet::new()
     };
+
+    // Compute effective verification flag (verification is ON by default)
+    let verify = !args.no_verify;
 
     // Configure pattern matching
     let pattern_config = build_pattern_config(&args);
@@ -142,7 +161,10 @@ fn main() {
         println!();
 
         // Detect system capabilities
-        let cpu_cores = detect_cpu_cores();
+        let cpu_cores = detect_cpu_cores(args.brutal);
+        if args.brutal {
+            println!("{} Brutal mode: using nearly all available cores (leaving one free)", style("⚠").yellow());
+        }
         let worker_count = args.workers.unwrap_or(cpu_cores);
         
         println!("{} Detected {} CPU cores, using {} workers", 
@@ -150,7 +172,7 @@ fn main() {
         println!("{} Pattern: {}", style("ℹ").blue(), pattern_config.description());
         println!("{} Target: {} key(s)", style("ℹ").blue(), args.target_keys);
         
-        if args.verify {
+        if verify {
             println!("{} MeshCore verification: {}", style("ℹ").blue(), style("ENABLED").green());
         }
         
@@ -167,7 +189,7 @@ fn main() {
         println!();
     }
 
-    let cpu_cores = detect_cpu_cores();
+    let cpu_cores = detect_cpu_cores(args.brutal);
     let worker_count = args.workers.unwrap_or(cpu_cores);
 
     // Shared state
@@ -207,8 +229,24 @@ fn main() {
     if args.gpu {
         worker_pool.enable_gpu();
     }
-    
+    // Attach optional GPU counter and start workers
+    let gpu_counter = Arc::new(AtomicU64::new(0));
+    #[cfg(target_os = "macos")]
+    if args.gpu {
+        worker_pool.set_gpu_attempts(gpu_counter.clone());
+    }
+
     worker_pool.start();
+
+    // Snapshot per-worker counters for live stats
+    let worker_counters = worker_pool.attempts_per_worker_snapshot();
+    let mut prev_worker_totals: Vec<u64> = worker_counters.iter().map(|c| c.load(Ordering::Relaxed)).collect();
+    let mut prev_sample = Instant::now();
+    // Per-core EMA (exponential moving average) to smooth instant rate spikes/zeros
+    // Sliding window of recent instantaneous samples per core to compute a short-term average
+    let window_size: usize = 6; // average over last 6 samples
+    let mut per_core_windows: Vec<Vec<f64>> = vec![vec![0.0f64; window_size]; worker_counters.len()];
+    let mut window_idx: usize = 0;
     
     // Collect found keys with their output info
     let mut found_keys: Vec<KeyOutput> = Vec::new();
@@ -228,14 +266,14 @@ fn main() {
             }
             
             // Verify key for MeshCore compatibility if requested
-            let validation = if args.verify {
+            let validation = if verify {
                 keygen::validate_for_meshcore(&key)
             } else {
                 keygen::ValidationResult { valid: true, reason: None }
             };
-            
+
             // Skip invalid keys if verification is enabled
-            if args.verify && !validation.valid {
+            if verify && !validation.valid {
                 if args.verbose && !args.json {
                     eprintln!("{} Skipping invalid key: {} - {}", 
                              style("⚠").yellow(), 
@@ -251,8 +289,8 @@ fn main() {
             // Mark this key as known
             known_keys.insert(key.public_hex.clone());
             
-            // Save the key
-            let saved = save_key(&key, &args.output, count);
+            // Save the key (use provided prefix for filename if present)
+                let saved = save_key(&key, &output_dir, count as usize, args.prefix.as_deref());
             
             // Create output record
             let key_output = KeyOutput {
@@ -279,7 +317,7 @@ fn main() {
                         println!("  First 8:     {}", style(&key.public_hex[..8]).cyan());
                         println!("  Last 8:      {}", style(&key.public_hex[56..]).cyan());
                         println!("  Node ID:     {}", style(&key.public_hex[..2]).magenta());
-                        if args.verify {
+                        if verify {
                             if validation.valid {
                                 println!("  MeshCore:    {}", style("✓ Valid").green());
                             } else {
@@ -308,19 +346,94 @@ fn main() {
         // Update progress
         let attempts = total_attempts.load(Ordering::Relaxed);
         let elapsed = start_time.elapsed();
-        let rate = if elapsed.as_secs_f64() > 0.0 {
+        let _rate = if elapsed.as_secs_f64() > 0.0 {
             attempts as f64 / elapsed.as_secs_f64()
         } else {
             0.0
         };
         
+        // Sample per-worker and GPU instantaneous rates
+        let now_sample = Instant::now();
+        let dt = now_sample.duration_since(prev_sample).as_secs_f64().max(1e-6);
+        let mut per_core_rates: Vec<f64> = Vec::with_capacity(worker_counters.len());
+        for (i, c) in worker_counters.iter().enumerate() {
+            let cur = c.load(Ordering::Relaxed);
+            let delta = cur.saturating_sub(prev_worker_totals[i]);
+            let inst = delta as f64 / dt;
+            // push into circular window and compute average
+            per_core_windows[i][window_idx] = inst;
+            let sum: f64 = per_core_windows[i].iter().sum();
+            let avg = sum / (window_size as f64);
+            per_core_rates.push(avg);
+            prev_worker_totals[i] = cur;
+        }
+        window_idx = (window_idx + 1) % window_size;
+        prev_sample = now_sample;
+
+        // GPU rate
+        let gpu_rate = {
+            #[cfg(target_os = "macos")]
+            {
+                if args.gpu {
+                    gpu_counter.load(Ordering::Relaxed) as f64 / elapsed.as_secs_f64().max(1e-6)
+                } else { 0.0 }
+            }
+            #[cfg(not(target_os = "macos") )]
+            { 0.0 }
+        };
+
+        // Total instantaneous rate approximate (sum per-core + gpu)
+        let total_inst_rate: f64 = per_core_rates.iter().sum::<f64>() + gpu_rate;
+
+        // Estimate probability/time to finish
+        let prob_per_attempt = pattern_config.estimated_probability();
+        let remaining = if target > found_keys.len() { target - found_keys.len() } else { 0 };
+        let eta_seconds = if prob_per_attempt > 0.0 && total_inst_rate > 0.0 {
+            let attempts_per_key = 1.0 / prob_per_attempt;
+            let expected_attempts = attempts_per_key * (remaining as f64);
+            expected_attempts / total_inst_rate
+        } else { f64::INFINITY };
+
+        // Format per-core rates into short fixed-width colored string using compact notation
+        let total_physical = num_cpus::get();
+        let perf_count = detect_perf_cores_count();
+        let efficiency_count = total_physical.saturating_sub(perf_count);
+
+        let per_core_str = per_core_rates.iter().enumerate().map(|(i,r)| {
+            let label = format!("c{:02}:", i+1);
+            let val = format_compact_f64(*r);
+            // pad to fixed width for alignment
+            let padded = format!("{:>6}", val);
+            let label_s = format!("{}", style(label).cyan());
+            let count_s = if args.brutal {
+                // color perf cores red, efficiency green
+                if i >= efficiency_count { format!("{}", style(padded).red()) } else { format!("{}", style(padded).green()) }
+            } else {
+                format!("{}", style(padded).green())
+            };
+            format!("{}{}", label_s, count_s)
+        }).collect::<Vec<_>>().join(" ");
+
         if let Some(ref pb) = progress_bar {
+            let eta_display = if eta_seconds.is_finite() {
+                let et = chrono::Local::now() + chrono::Duration::seconds(eta_seconds.round() as i64);
+                format!("ETA {}", et.format("%Y-%m-%d %H:%M:%S"))
+            } else { "ETA ∞".to_string() };
+
+            let attempts_s = format_compact_u64(attempts);
+            let rate_s = format_compact_f64(total_inst_rate);
+            let found_s = format_compact_u64(found_count.load(Ordering::Relaxed));
+            let target_s = format_compact_u64(target as u64);
+
             pb.set_message(format!(
-                "Attempts: {} | Rate: {:.0} keys/sec | Found: {}/{}",
-                format_number(attempts),
-                rate,
-                found_count.load(Ordering::Relaxed),
-                target
+                "{attempts:>10} | Rate: {rate:>8}/s | Found: {found:>6}/{target:<6} | {eta} | GPU:{gpu:>8}/s | {cores}",
+                attempts = attempts_s,
+                rate = rate_s,
+                found = found_s,
+                target = target_s,
+                eta = eta_display,
+                gpu = format_compact_f64(gpu_rate),
+                cores = per_core_str
             ));
         }
         
@@ -379,9 +492,9 @@ fn main() {
         println!("  Total Attempts:  {}", format_number(attempts));
         println!("  Average Rate:    {:.0} keys/sec", rate);
         println!("  Keys Found:      {}", found_keys.len());
-        if args.verify {
-            println!("  Keys Valid:      {} (MeshCore compatible)", valid_count);
-        }
+                if verify {
+                    println!("  Keys Valid:      {} (MeshCore compatible)", valid_count);
+                }
         println!();
     }
 }
@@ -412,9 +525,15 @@ fn build_pattern_config(args: &Args) -> PatternConfig {
     config
 }
 
-fn detect_cpu_cores() -> usize {
+fn detect_cpu_cores(brutal: bool) -> usize {
     #[cfg(target_os = "macos")]
     {
+        if brutal {
+            // Use almost all cores but leave one free for responsiveness
+            let cores = num_cpus::get();
+            return std::cmp::max(1, cores.saturating_sub(1));
+        }
+
         // Try to detect performance cores on Apple Silicon
         if let Ok(output) = std::process::Command::new("sysctl")
             .args(["-n", "hw.perflevel0.physicalcpu"])
@@ -425,44 +544,81 @@ fn detect_cpu_cores() -> usize {
             }
         }
     }
-    
+
     // Fallback to num_cpus
     let cores = num_cpus::get();
-    // Use 75% of cores like the Python version
-    std::cmp::max(2, (cores as f64 * 0.75).round() as usize)
+    // Use 75% of cores like the Python version when not brutal
+    if brutal {
+        std::cmp::max(1, cores.saturating_sub(1))
+    } else {
+        std::cmp::max(2, (cores as f64 * 0.75).round() as usize)
+    }
+}
+
+fn detect_perf_cores_count() -> usize {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = std::process::Command::new("sysctl")
+            .args(["-n", "hw.perflevel0.physicalcpu"])
+            .output()
+        {
+            if let Ok(cores) = String::from_utf8_lossy(&output.stdout).trim().parse::<usize>() {
+                return cores;
+            }
+        }
+        0
+    }
+    #[cfg(not(target_os = "macos") )]
+    {
+        0
+    }
 }
 
 /// Load existing public keys from the output directory to avoid duplicates
 fn load_existing_keys(output_dir: &PathBuf) -> HashSet<String> {
     let mut keys = HashSet::new();
-    
-    if let Ok(entries) = fs::read_dir(output_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                // Only look at public key files
-                if name.starts_with("meshcore_") && name.contains("_public.txt") {
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        let key = content.trim().to_lowercase();
-                        // Validate it looks like a hex public key
-                        if key.len() == 64 && key.chars().all(|c| c.is_ascii_hexdigit()) {
-                            keys.insert(key);
+
+    // Recursively scan the provided directory for any files ending with `_public.txt`.
+    fn scan_dir(dir: &PathBuf, keys: &mut HashSet<String>) {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    scan_dir(&path, keys);
+                    continue;
+                }
+
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.ends_with("_public.txt") {
+                        if let Ok(content) = fs::read_to_string(&path) {
+                            let key = content.trim().to_lowercase();
+                            if key.len() == 64 && key.chars().all(|c| c.is_ascii_hexdigit()) {
+                                keys.insert(key);
+                            }
                         }
                     }
                 }
             }
         }
     }
-    
+
+    scan_dir(output_dir, &mut keys);
     keys
 }
 
-fn save_key(key: &KeyInfo, output_dir: &PathBuf, index: usize) -> Option<(String, String)> {
-    let pattern_id = &key.public_hex[..8].to_uppercase();
+fn save_key(key: &KeyInfo, output_dir: &PathBuf, index: usize, filename_prefix: Option<&str>) -> Option<(String, String)> {
+    // If a user-supplied prefix is provided, prefer it as the filename prefix (uppercased).
+    // Otherwise fall back to the first 8 hex chars of the public key.
+    let pattern_id = if let Some(p) = filename_prefix {
+        p.to_uppercase()
+    } else {
+        key.public_hex[..8].to_uppercase()
+    };
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-    
-    let pub_filename = format!("meshcore_{}_{}_{}_public.txt", pattern_id, index, timestamp);
-    let priv_filename = format!("meshcore_{}_{}_{}_private.txt", pattern_id, index, timestamp);
+
+    // Use a concise filename: <prefix>_<index>_<timestamp>_public|private.txt
+    let pub_filename = format!("{}_{}_{}_public.txt", pattern_id, index, timestamp);
+    let priv_filename = format!("{}_{}_{}_private.txt", pattern_id, index, timestamp);
     
     let pub_path = output_dir.join(&pub_filename);
     let priv_path = output_dir.join(&priv_filename);
@@ -480,6 +636,49 @@ fn save_key(key: &KeyInfo, output_dir: &PathBuf, index: usize) -> Option<(String
     Some((pub_filename, priv_filename))
 }
 
+#[cfg(test)]
+mod main_filename_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_save_key_with_prefix() {
+        let dir = tempdir().unwrap();
+        let out = dir.path().to_path_buf();
+
+        // Build a dummy key
+        let key = KeyInfo {
+            public_hex: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_string(),
+            private_hex: "00".repeat(64),
+            public_bytes: [0xAB; 32],
+            private_bytes: [0x00; 64],
+        };
+
+        let prefix = Some("abcd");
+        let saved = save_key(&key, &out, 3, prefix).expect("save_key failed");
+        let pub_name = saved.0;
+        assert!(pub_name.starts_with("ABCD_3_"), "pub filename didn't start with expected prefix: {}", pub_name);
+    }
+
+    #[test]
+    fn test_load_existing_keys_recursive() {
+        let dir = tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+
+        // Create a timestamped subdirectory to simulate previous run
+        let sub = base.join("20260101_000000");
+        fs::create_dir_all(&sub).unwrap();
+
+        // Write a public key file
+        let pub_path = sub.join("SOME_1_20260101_000000_public.txt");
+        let key_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        fs::write(&pub_path, key_hex).unwrap();
+
+        let found = load_existing_keys(&base);
+        assert!(found.contains(&key_hex.to_string()), "load_existing_keys did not find the key in subdir");
+    }
+}
+
 fn format_number(n: u64) -> String {
     let s = n.to_string();
     let mut result = String::new();
@@ -490,6 +689,44 @@ fn format_number(n: u64) -> String {
         result.push(c);
     }
     result.chars().rev().collect()
+}
+
+/// Compact human-readable formatting: 24.8k, 1.2M, etc.
+fn format_compact_u64(n: u64) -> String {
+    const K: f64 = 1_000.0;
+    const M: f64 = 1_000_000.0;
+    const B: f64 = 1_000_000_000.0;
+
+    let f = n as f64;
+    if f >= B {
+        format!("{:.1}B", f / B)
+    } else if f >= M {
+        format!("{:.1}M", f / M)
+    } else if f >= K {
+        format!("{:.1}k", f / K)
+    } else {
+        format!("{}", n)
+    }
+}
+
+fn format_compact_f64(n: f64) -> String {
+    const K: f64 = 1_000.0;
+    const M: f64 = 1_000_000.0;
+    const B: f64 = 1_000_000_000.0;
+
+    if n.is_infinite() {
+        return "∞".to_string();
+    }
+
+    if n >= B {
+        format!("{:.1}B", n / B)
+    } else if n >= M {
+        format!("{:.1}M", n / M)
+    } else if n >= K {
+        format!("{:.1}k", n / K)
+    } else {
+        format!("{:.0}", n)
+    }
 }
 
 fn run_tests() {

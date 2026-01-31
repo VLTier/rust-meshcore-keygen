@@ -496,10 +496,13 @@ kernel void generate_ed25519_keys(
 "#;
 
 /// GPU worker for Metal-accelerated key generation
+use std::sync::Arc;
+
 pub fn gpu_worker_loop(
     pattern_config: &PatternConfig,
     result_sender: &Sender<KeyInfo>,
     total_attempts: &AtomicU64,
+    gpu_attempts: Option<Arc<AtomicU64>>,
     should_stop: &AtomicBool,
 ) -> Result<(), String> {
     // Initialize Metal
@@ -643,6 +646,9 @@ pub fn gpu_worker_loop(
         }
         
         total_attempts.fetch_add(GPU_BATCH_SIZE as u64, Ordering::Relaxed);
+        if let Some(counter) = &gpu_attempts {
+            counter.fetch_add(GPU_BATCH_SIZE as u64, Ordering::Relaxed);
+        }
     }
     
     Ok(())
