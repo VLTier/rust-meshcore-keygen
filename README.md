@@ -1,15 +1,46 @@
 # MeshCore Ed25519 Vanity Key Generator (Rust)
 
-A high-performance Ed25519 vanity key generator for MeshCore nodes, written in Rust with CPU multi-threading and Apple Metal GPU acceleration support.
+> **This project was vibecoded** — built entirely through AI-assisted pair programming with GitHub Copilot (Claude), transforming ideas into code through natural conversation.
+
+## Acknowledgments
+
+This project is a Rust reimplementation inspired by and honoring [**meshcore-keygen**](https://github.com/agessaman/meshcore-keygen) by [@agessaman](https://github.com/agessaman).
+Please check out the original Python project, since [@agessaman](https://github.com/agessaman) create this fantastic idea.
+
+### What We Borrowed & Built Upon
+
+The original Python project provided the foundation and inspiration for this Rust version
+Since I've always wanted to try out Rust, I thought that this would be a great opportunity to learn both Rust and vibe coding ...
+
+### New Features in This Rust Version
+
+Beyond the original, this vibecoded version adds:
+
+- **Apple Metal GPU Acceleration** — Native GPU compute shaders for M1/M2/M3 Macs
+- **Cross-Platform GPU Detection** — Metal, CUDA, Vulkan, and OpenCL support with native-first priority
+- **`--benchmark` Mode** — Measure raw key generation performance
+- **`--powersave` Mode** — Reduce CPU usage for background operation
+- **`--brutal` Mode** — Use maximum CPU cores for peak performance
+- **`--beautiful` Mode** — Rich Unicode TUI with animated progress display
+- **10-100x Performance** — From ~6,000 keys/sec (Python) to 500,000+ keys/sec (Rust)
+- **Single Binary** — No Python interpreter or dependencies needed
+- **CI/CD Pipeline** — Automated builds for Linux, macOS, and Windows
+
+---
+
+## Overview
+
+A high-performance Ed25519 vanity key generator for MeshCore nodes, written in Rust with CPU multi-threading and GPU acceleration support.
 
 ## Features
 
-- **🚀 Blazing Fast**: Up to 500,000+ keys/second on modern hardware
-- **🔧 Multi-threaded**: Automatic CPU core detection with optimal worker allocation
-- **🎮 GPU Acceleration**: Metal GPU support for Apple Silicon (M1/M2/M3)
-- **🎯 Pattern Matching**: Multiple vanity pattern modes
-- **📁 Automatic Key Saving**: Creates speaking filenames for each found key
-- **✅ MeshCore Compatible**: Generates keys in the exact format MeshCore expects
+- **Blazing Fast**: Up to 1,600,000+ keys/second with GPU acceleration
+- **Multi-threaded**: Automatic CPU core detection with optimal worker allocation
+- **GPU Acceleration**: Metal GPU support for Apple Silicon (M1/M2/M3)
+- **Pattern Matching**: Multiple vanity pattern modes
+- **Automatic Key Saving**: Creates speaking filenames for each found key
+- **MeshCore Compatible**: Generates keys in the exact format MeshCore expects
+- **Power Modes**: Choose between powersave, default, or brutal CPU usage
 
 ## Installation
 
@@ -44,7 +75,7 @@ cargo build --release
 # Generate keys starting with prefix "AB"
 ./target/release/meshcore-keygen --prefix AB -n 3
 
-# Enable Metal GPU acceleration (macOS only)
+# Enable  GPU acceleration
 ./target/release/meshcore-keygen --pattern 4 -n 10 --gpu
 ```
 
@@ -54,13 +85,21 @@ cargo build --release
 Options:
   -n, --target-keys <N>    Number of keys to find [default: 1]
   -w, --workers <N>        Number of worker threads (auto-detected if not set)
-      --gpu                Enable Metal GPU acceleration (macOS only)
+      --gpu                Enable GPU acceleration
       --pattern <2-8>      Pattern mode: first N chars match last N chars
       --prefix <HEX>       Search for keys starting with this hex prefix
       --vanity <2-8>       First N chars match last N chars
   -o, --output <DIR>       Output directory for key files [default: .]
       --max-time <SECS>    Maximum time to run in seconds (0 = unlimited)
+      --no-verify          Disable MeshCore verification (enabled by default)
+      --skip-existing      Skip keys that already exist in the output directory
+      --json               Output results as JSON instead of human-readable format
   -v, --verbose            Verbose output
+      --brutal             Use maximum CPU cores for peak performance
+      --powersave          Power-saving mode: fewer cores for background operation
+      --benchmark          Benchmark mode: measure speed without saving keys
+      --beautiful          Beautiful display mode with enhanced statistics
+      --refresh-ms <MS>    Display refresh interval in milliseconds [default: 500]
       --test               Run built-in tests
   -h, --help               Print help
   -V, --version            Print version
@@ -154,13 +193,25 @@ meshcore_7B33BDB3_1_20260130_223639_private.txt
 
 ## Performance
 
-Typical performance on different hardware:
+### Benchmarks (Apple M3 Pro)
 
-| Hardware     | CPU Only          | With Metal GPU    |
-| ------------ | ----------------- | ----------------- |
-| Apple M3 Pro | ~480,000 keys/sec | ~500,000 keys/sec |
-| Apple M1     | ~300,000 keys/sec | ~350,000 keys/sec |
-| Intel i7     | ~200,000 keys/sec | N/A               |
+Real-world benchmarks finding 100 keys with 4-char pattern matching:
+
+| Mode            | Keys/sec   | Notes                        |
+| --------------- | ---------- | ---------------------------- |
+| Default (CPU)   | ~567,000   | Balanced CPU usage           |
+| Powersave (CPU) | ~562,000   | Uses efficiency cores only   |
+| Brutal (CPU)    | ~734,000   | Uses all cores minus one     |
+| GPU (Metal)     | ~1,570,000 | Metal GPU acceleration       |
+| GPU + Brutal    | ~1,689,000 | GPU + all CPU cores combined |
+
+### Performance by Hardware
+
+| Hardware     | CPU Only          | With Metal GPU      |
+| ------------ | ----------------- | ------------------- |
+| Apple M3 Pro | ~734,000 keys/sec | ~1,689,000 keys/sec |
+| Apple M1     | ~400,000 keys/sec | ~800,000 keys/sec   |
+| Intel i7     | ~200,000 keys/sec | N/A                 |
 
 ## Testing
 
@@ -203,7 +254,7 @@ The tool uses the exact Ed25519 algorithm that MeshCore expects:
 
 ## Security Notes
 
-⚠️ **Keep your private keys secure and never share them!**
+**Keep your private keys secure and never share them!**
 
 - Generated keys are cryptographically random
 - Each run produces different results
@@ -214,7 +265,6 @@ The tool uses the exact Ed25519 algorithm that MeshCore expects:
 
 MIT License
 
-## Credits
+---
 
-Inspired by [meshcore-keygen](https://github.com/agessaman/meshcore-keygen) (Python version).
-Rewritten in Rust for maximum performance.
+_Built through vibecoding_
