@@ -1,11 +1,12 @@
 //! MeshCore Ed25519 Vanity Key Generator
 //!
-//! High-performance key generator with CPU multi-threading and Metal GPU support.
+//! High-performance key generator with CPU multi-threading and GPU support.
 //! Generates Ed25519 keys compatible with MeshCore's specific format.
 
 mod keygen;
 mod pattern;
 mod worker;
+mod gpu_detect;
 #[cfg(target_os = "macos")]
 mod metal_gpu;
 
@@ -112,6 +113,22 @@ struct Args {
     #[arg(long, default_value_t = false)]
     brutal: bool,
 
+    /// Power-saving mode: use only efficiency cores on macOS, or half cores on other platforms
+    #[arg(long, default_value_t = false)]
+    powersave: bool,
+
+    /// Benchmark mode: measure speed without saving keys to disk
+    #[arg(long, default_value_t = false)]
+    benchmark: bool,
+
+    /// Beautiful display mode: enhanced statistics with cleaner formatting
+    #[arg(long, default_value_t = false)]
+    beautiful: bool,
+
+    /// Display refresh interval in milliseconds (default: 500ms for smoother display)
+    #[arg(long, default_value = "500")]
+    refresh_ms: u64,
+
     /// Run tests
     #[arg(long)]
     test: bool,
@@ -161,9 +178,15 @@ fn main() {
         println!();
 
         // Detect system capabilities
-        let cpu_cores = detect_cpu_cores(args.brutal);
+        let cpu_cores = detect_cpu_cores(args.brutal, args.powersave);
         if args.brutal {
             println!("{} Brutal mode: using nearly all available cores (leaving one free)", style("⚠").yellow());
+        }
+        if args.powersave {
+            println!("{} Power-save mode: using efficiency cores only", style("🔋").green());
+        }
+        if args.benchmark {
+            println!("{} Benchmark mode: keys will NOT be saved to disk", style("⚡").yellow());
         }
         let worker_count = args.workers.unwrap_or(cpu_cores);
         
@@ -189,7 +212,7 @@ fn main() {
         println!();
     }
 
-    let cpu_cores = detect_cpu_cores(args.brutal);
+    let cpu_cores = detect_cpu_cores(args.brutal, args.powersave);
     let worker_count = args.workers.unwrap_or(cpu_cores);
 
     // Shared state
@@ -289,8 +312,12 @@ fn main() {
             // Mark this key as known
             known_keys.insert(key.public_hex.clone());
             
-            // Save the key (use provided prefix for filename if present)
-                let saved = save_key(&key, &output_dir, count as usize, args.prefix.as_deref());
+            // Save the key (skip in benchmark mode)
+            let saved = if args.benchmark {
+                None
+            } else {
+                save_key(&key, &output_dir, count as usize, args.prefix.as_deref())
+            };
             
             // Create output record
             let key_output = KeyOutput {
@@ -425,16 +452,44 @@ fn main() {
             let found_s = format_compact_u64(found_count.load(Ordering::Relaxed));
             let target_s = format_compact_u64(target as u64);
 
-            pb.set_message(format!(
-                "{attempts:>10} | Rate: {rate:>8}/s | Found: {found:>6}/{target:<6} | {eta} | GPU:{gpu:>8}/s | {cores}",
-                attempts = attempts_s,
-                rate = rate_s,
-                found = found_s,
-                target = target_s,
-                eta = eta_display,
-                gpu = format_compact_f64(gpu_rate),
-                cores = per_core_str
-            ));
+            if args.beautiful {
+                // Beautiful mode: cleaner multi-line style statistics
+                let progress_pct = if target > 0 {
+                    (found_count.load(Ordering::Relaxed) as f64 / target as f64 * 100.0).min(100.0)
+                } else { 0.0 };
+                
+                // Show aggregate CPU rate and GPU rate separately
+                let cpu_rate: f64 = per_core_rates.iter().sum();
+                
+                let mode_str = if args.benchmark { format!("{}", style("[BENCHMARK]").yellow()) } 
+                               else if args.powersave { format!("{}", style("[POWERSAVE]").green()) }
+                               else if args.brutal { format!("{}", style("[BRUTAL]").red()) }
+                               else { "".to_string() };
+                
+                pb.set_message(format!(
+                    "{mode} {attempts:>10} attempts │ {rate:>8}/s │ Progress: {found}/{target} ({pct:>5.1}%) │ CPU:{cpu:>8}/s GPU:{gpu:>8}/s │ {eta}",
+                    mode = mode_str,
+                    attempts = attempts_s,
+                    rate = rate_s,
+                    found = found_s,
+                    target = target_s,
+                    pct = progress_pct,
+                    cpu = format_compact_f64(cpu_rate),
+                    gpu = format_compact_f64(gpu_rate),
+                    eta = eta_display,
+                ));
+            } else {
+                pb.set_message(format!(
+                    "{attempts:>10} | Rate: {rate:>8}/s | Found: {found:>6}/{target:<6} | {eta} | GPU:{gpu:>8}/s | {cores}",
+                    attempts = attempts_s,
+                    rate = rate_s,
+                    found = found_s,
+                    target = target_s,
+                    eta = eta_display,
+                    gpu = format_compact_f64(gpu_rate),
+                    cores = per_core_str
+                ));
+            }
         }
         
         // Check stop conditions
@@ -452,7 +507,8 @@ fn main() {
             }
         }
         
-        std::thread::sleep(Duration::from_millis(50));
+        // Use configurable refresh interval for smoother display
+        std::thread::sleep(Duration::from_millis(args.refresh_ms.max(50)));
     }
     
     // Cleanup
@@ -525,13 +581,31 @@ fn build_pattern_config(args: &Args) -> PatternConfig {
     config
 }
 
-fn detect_cpu_cores(brutal: bool) -> usize {
+fn detect_cpu_cores(brutal: bool, powersave: bool) -> usize {
     #[cfg(target_os = "macos")]
     {
+        // brutal takes precedence over powersave
         if brutal {
             // Use almost all cores but leave one free for responsiveness
             let cores = num_cpus::get();
             return std::cmp::max(1, cores.saturating_sub(1));
+        }
+
+        if powersave {
+            // Use only efficiency cores on macOS
+            if let Ok(output) = std::process::Command::new("sysctl")
+                .args(["-n", "hw.perflevel1.physicalcpu"])
+                .output()
+            {
+                if let Ok(cores) = String::from_utf8_lossy(&output.stdout).trim().parse::<usize>() {
+                    if cores > 0 {
+                        return cores;
+                    }
+                }
+            }
+            // Fallback: use half of total cores
+            let cores = num_cpus::get();
+            return std::cmp::max(1, cores / 2);
         }
 
         // Try to detect performance cores on Apple Silicon
@@ -545,14 +619,24 @@ fn detect_cpu_cores(brutal: bool) -> usize {
         }
     }
 
-    // Fallback to num_cpus
-    let cores = num_cpus::get();
-    // Use 75% of cores like the Python version when not brutal
-    if brutal {
-        std::cmp::max(1, cores.saturating_sub(1))
-    } else {
-        std::cmp::max(2, (cores as f64 * 0.75).round() as usize)
+    #[cfg(not(target_os = "macos"))]
+    {
+        // brutal takes precedence over powersave
+        if brutal {
+            let cores = num_cpus::get();
+            return std::cmp::max(1, cores.saturating_sub(1));
+        }
+
+        if powersave {
+            // Use half of total cores on non-macOS
+            let cores = num_cpus::get();
+            return std::cmp::max(1, cores / 2);
+        }
     }
+
+    // Fallback to num_cpus - 75% of cores like the Python version
+    let cores = num_cpus::get();
+    std::cmp::max(2, (cores as f64 * 0.75).round() as usize)
 }
 
 fn detect_perf_cores_count() -> usize {
@@ -676,6 +760,101 @@ mod main_filename_tests {
 
         let found = load_existing_keys(&base);
         assert!(found.contains(&key_hex.to_string()), "load_existing_keys did not find the key in subdir");
+    }
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    #[test]
+    fn test_format_compact_u64() {
+        // Small numbers stay as-is
+        assert_eq!(format_compact_u64(0), "0");
+        assert_eq!(format_compact_u64(999), "999");
+        
+        // Thousands
+        assert_eq!(format_compact_u64(1_000), "1.0k");
+        assert_eq!(format_compact_u64(24_800), "24.8k");
+        assert_eq!(format_compact_u64(999_999), "1000.0k");
+        
+        // Millions
+        assert_eq!(format_compact_u64(1_000_000), "1.0M");
+        assert_eq!(format_compact_u64(1_200_000), "1.2M");
+        assert_eq!(format_compact_u64(999_999_999), "1000.0M");
+        
+        // Billions
+        assert_eq!(format_compact_u64(1_000_000_000), "1.0B");
+        assert_eq!(format_compact_u64(5_500_000_000), "5.5B");
+    }
+
+    #[test]
+    fn test_format_compact_f64() {
+        // Small numbers
+        assert_eq!(format_compact_f64(0.0), "0");
+        assert_eq!(format_compact_f64(999.0), "999");
+        
+        // Thousands
+        assert_eq!(format_compact_f64(1_000.0), "1.0k");
+        assert_eq!(format_compact_f64(24_800.0), "24.8k");
+        
+        // Millions
+        assert_eq!(format_compact_f64(1_000_000.0), "1.0M");
+        assert_eq!(format_compact_f64(1_200_000.0), "1.2M");
+        
+        // Billions
+        assert_eq!(format_compact_f64(1_000_000_000.0), "1.0B");
+        
+        // Infinity
+        assert_eq!(format_compact_f64(f64::INFINITY), "∞");
+    }
+
+    #[test]
+    fn test_format_number() {
+        assert_eq!(format_number(0), "0");
+        assert_eq!(format_number(123), "123");
+        assert_eq!(format_number(1_234), "1,234");
+        assert_eq!(format_number(1_234_567), "1,234,567");
+        assert_eq!(format_number(1_234_567_890), "1,234,567,890");
+    }
+}
+
+#[cfg(test)]
+mod cpu_detection_tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_cpu_cores_normal() {
+        // Normal mode should return at least 1 core
+        let cores = detect_cpu_cores(false, false);
+        assert!(cores >= 1, "Should detect at least 1 core");
+    }
+
+    #[test]
+    fn test_detect_cpu_cores_brutal() {
+        // Brutal mode should return at least as many as normal
+        let normal = detect_cpu_cores(false, false);
+        let brutal = detect_cpu_cores(true, false);
+        assert!(brutal >= normal, "Brutal mode should use at least as many cores as normal");
+    }
+
+    #[test]
+    fn test_detect_cpu_cores_powersave() {
+        // Powersave should return at least 1 but less than or equal to normal
+        let normal = detect_cpu_cores(false, false);
+        let powersave = detect_cpu_cores(false, true);
+        assert!(powersave >= 1, "Powersave should use at least 1 core");
+        assert!(powersave <= normal, "Powersave should use at most as many cores as normal");
+    }
+
+    #[test]
+    fn test_powersave_and_brutal_conflict() {
+        // When both are set, brutal takes precedence (uses all cores)
+        let both = detect_cpu_cores(true, true);
+        let brutal = detect_cpu_cores(true, false);
+        // They should be roughly the same (brutal wins)
+        assert!(both >= 1);
+        assert_eq!(both, brutal, "When both flags set, brutal should take precedence");
     }
 }
 

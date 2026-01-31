@@ -2,8 +2,16 @@
 name = "meshcore-keygen"
 version = "1.0.0"
 edition = "2021"
-description = "High-performance MeshCore Ed25519 vanity key generator with CPU and Metal GPU support"
+description = "High-performance MeshCore Ed25519 vanity key generator with CPU and GPU support"
 license = "MIT"
+
+[features]
+default = []
+# GPU acceleration features - enable based on target platform
+gpu-metal = []      # macOS Metal (built-in)
+gpu-vulkan = ["wgpu"]  # Cross-platform Vulkan/DX12/OpenGL via wgpu
+gpu-cuda = []       # NVIDIA CUDA (requires CUDA toolkit)
+gpu-opencl = ["ocl"]   # Cross-platform OpenCL (NVIDIA, AMD, Intel)
 
 [dependencies]
 # Ed25519 cryptography
@@ -29,6 +37,10 @@ console = "0.15"
 
 # System info
 sysinfo = "0.30"
+
+# Cross-platform GPU (optional)
+wgpu = { version = "0.19", optional = true }
+ocl = { version = "0.19", optional = true }
 
 # Metal GPU (macOS only)
 [target.'cfg(target_os = "macos")'.dependencies]

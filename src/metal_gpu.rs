@@ -658,13 +658,24 @@ pub fn gpu_worker_loop(
 mod tests {
     use super::*;
     
+    /// Test Metal device availability - skips gracefully if no Metal device
     #[test]
     fn test_metal_device_available() {
-        if let Some(device) = Device::system_default() {
-            println!("Metal device: {}", device.name());
-            assert!(!device.name().is_empty());
-        } else {
-            println!("No Metal device available (expected on non-macOS)");
+        match Device::system_default() {
+            Some(device) => {
+                println!("Metal device found: {}", device.name());
+                assert!(!device.name().is_empty(), "Device name should not be empty");
+            }
+            None => {
+                println!("SKIP: No Metal device available (expected on non-macOS or in CI)");
+            }
         }
+    }
+
+    /// Test GPU batch size is reasonable
+    #[test]
+    fn test_gpu_batch_size() {
+        assert!(GPU_BATCH_SIZE >= 1024, "GPU batch size should be at least 1024 for efficiency");
+        assert!(GPU_BATCH_SIZE <= 1_000_000, "GPU batch size should not be excessively large");
     }
 }
