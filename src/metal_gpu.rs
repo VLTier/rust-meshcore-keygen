@@ -507,29 +507,34 @@ pub fn gpu_worker_loop(
 ) -> Result<(), String> {
     // Initialize Metal
     let device = Device::system_default().ok_or("No Metal device found")?;
-    
+
     eprintln!("Metal GPU: Initializing on '{}'", device.name());
-    eprintln!("Metal GPU: Batch size = {} keys per dispatch", GPU_BATCH_SIZE);
-    
+    eprintln!(
+        "Metal GPU: Batch size = {} keys per dispatch",
+        GPU_BATCH_SIZE
+    );
+
     // Compile the shader
     let options = CompileOptions::new();
     let library = device
         .new_library_with_source(METAL_SHADER, &options)
         .map_err(|e| format!("Failed to compile Metal shader: {}", e))?;
-    
+
     let kernel = library
         .get_function("generate_ed25519_keys", None)
         .map_err(|e| format!("Failed to get kernel function: {}", e))?;
-    
+
     let pipeline = device
         .new_compute_pipeline_state_with_function(&kernel)
         .map_err(|e| format!("Failed to create compute pipeline: {}", e))?;
-    
+
     let command_queue = device.new_command_queue();
-    
-    eprintln!("Metal GPU: Pipeline ready, max threads per group = {}", 
-              pipeline.max_total_threads_per_threadgroup());
-    
+
+    eprintln!(
+        "Metal GPU: Pipeline ready, max threads per group = {}",
+        pipeline.max_total_threads_per_threadgroup()
+    );
+
     // Create buffers
     let random_buffer = device.new_buffer(16, MTLResourceOptions::StorageModeShared);
     let offset_buffer = device.new_buffer(4, MTLResourceOptions::StorageModeShared);
@@ -541,25 +546,25 @@ pub fn gpu_worker_loop(
         (GPU_BATCH_SIZE * 64) as u64,
         MTLResourceOptions::StorageModeShared,
     );
-    
+
     let mut rng = rand::thread_rng();
     let mut batch_number: u32 = 0;
-    
+
     // Use optimal thread group size
-    let thread_group_size = std::cmp::min(
-        pipeline.max_total_threads_per_threadgroup() as usize,
-        256
-    );
+    let thread_group_size =
+        std::cmp::min(pipeline.max_total_threads_per_threadgroup() as usize, 256);
     let num_thread_groups = GPU_BATCH_SIZE / thread_group_size;
-    
-    eprintln!("Metal GPU: Using {} thread groups of {} threads each", 
-              num_thread_groups, thread_group_size);
-    
+
+    eprintln!(
+        "Metal GPU: Using {} thread groups of {} threads each",
+        num_thread_groups, thread_group_size
+    );
+
     loop {
         if should_stop.load(Ordering::Relaxed) {
             break;
         }
-        
+
         // Update random state and batch offset
         {
             use rand::RngCore;
@@ -573,26 +578,26 @@ pub fn gpu_worker_loop(
             }
             batch_number = batch_number.wrapping_add(1);
         }
-        
+
         // Dispatch GPU compute
         let command_buffer = command_queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
-        
+
         encoder.set_compute_pipeline_state(&pipeline);
         encoder.set_buffer(0, Some(&random_buffer), 0);
         encoder.set_buffer(1, Some(&offset_buffer), 0);
         encoder.set_buffer(2, Some(&public_keys_buffer), 0);
         encoder.set_buffer(3, Some(&private_keys_buffer), 0);
-        
+
         let tg_size = MTLSize::new(thread_group_size as u64, 1, 1);
         let num_tg = MTLSize::new(num_thread_groups as u64, 1, 1);
-        
+
         encoder.dispatch_thread_groups(num_tg, tg_size);
         encoder.end_encoding();
-        
+
         command_buffer.commit();
         command_buffer.wait_until_completed();
-        
+
         // Check for completion status
         let status = command_buffer.status();
         if status == MTLCommandBufferStatus::Error {
@@ -600,16 +605,16 @@ pub fn gpu_worker_loop(
             thread::sleep(Duration::from_millis(100));
             continue;
         }
-        
+
         // Process results - check patterns and send matches
         let public_ptr = public_keys_buffer.contents() as *const u8;
         let private_ptr = private_keys_buffer.contents() as *const u8;
-        
+
         for i in 0..GPU_BATCH_SIZE {
             if should_stop.load(Ordering::Relaxed) {
                 return Ok(());
             }
-            
+
             // Read public key
             let mut public_bytes = [0u8; 32];
             unsafe {
@@ -619,7 +624,7 @@ pub fn gpu_worker_loop(
                     32,
                 );
             }
-            
+
             // Check pattern
             if matches_pattern_bytes(&public_bytes, pattern_config) {
                 // Read private key
@@ -631,33 +636,33 @@ pub fn gpu_worker_loop(
                         64,
                     );
                 }
-                
+
                 let key = KeyInfo {
                     public_hex: hex::encode(public_bytes),
                     private_hex: hex::encode(private_bytes),
                     public_bytes,
                     private_bytes,
                 };
-                
+
                 if result_sender.send(key).is_err() {
                     return Ok(());
                 }
             }
         }
-        
+
         total_attempts.fetch_add(GPU_BATCH_SIZE as u64, Ordering::Relaxed);
         if let Some(counter) = &gpu_attempts {
             counter.fetch_add(GPU_BATCH_SIZE as u64, Ordering::Relaxed);
         }
     }
-    
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     /// Test Metal device availability - skips gracefully if no Metal device
     #[test]
     fn test_metal_device_available() {
@@ -674,8 +679,16 @@ mod tests {
 
     /// Test GPU batch size is reasonable
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn test_gpu_batch_size() {
-        assert!(GPU_BATCH_SIZE >= 1024, "GPU batch size should be at least 1024 for efficiency");
-        assert!(GPU_BATCH_SIZE <= 1_000_000, "GPU batch size should not be excessively large");
+        // Runtime check suppressed for clippy as GPU_BATCH_SIZE is a compile-time constant.
+        assert!(
+            GPU_BATCH_SIZE >= 1024,
+            "GPU batch size should be at least 1024 for efficiency"
+        );
+        assert!(
+            GPU_BATCH_SIZE <= 1_000_000,
+            "GPU batch size should not be excessively large"
+        );
     }
 }

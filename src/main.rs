@@ -3,24 +3,24 @@
 //! High-performance key generator with CPU multi-threading and GPU support.
 //! Generates Ed25519 keys compatible with MeshCore's specific format.
 
-mod keygen;
-mod pattern;
-mod worker;
 mod gpu_detect;
+mod keygen;
 #[cfg(target_os = "macos")]
 mod metal_gpu;
+mod pattern;
+mod worker;
 
 use clap::Parser;
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
+
 use serde::Serialize;
 use std::collections::HashSet;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::path::PathBuf;
-use std::fs;
-use num_cpus;
 
 use crate::keygen::KeyInfo;
 use crate::pattern::{PatternConfig, PatternMode};
@@ -160,7 +160,7 @@ fn main() {
 
     // Load existing keys to avoid duplicates. We scan the base output root (not the per-run subdir)
     let existing_keys = if args.skip_existing {
-        load_existing_keys(&base_output)
+        load_existing_keys(base_output.as_path())
     } else {
         HashSet::new()
     };
@@ -170,45 +170,82 @@ fn main() {
 
     // Configure pattern matching
     let pattern_config = build_pattern_config(&args);
-    
+
     if !args.json {
-        println!("{}", style("╔════════════════════════════════════════════════════════════╗").cyan());
-        println!("{}", style("║     MeshCore Ed25519 Vanity Key Generator (Rust)           ║").cyan());
-        println!("{}", style("╚════════════════════════════════════════════════════════════╝").cyan());
+        println!(
+            "{}",
+            style("╔════════════════════════════════════════════════════════════╗").cyan()
+        );
+        println!(
+            "{}",
+            style("║     MeshCore Ed25519 Vanity Key Generator (Rust)           ║").cyan()
+        );
+        println!(
+            "{}",
+            style("╚════════════════════════════════════════════════════════════╝").cyan()
+        );
         println!();
 
         // Detect system capabilities
         let cpu_cores = detect_cpu_cores(args.brutal, args.powersave);
         if args.brutal {
-            println!("{} Brutal mode: using nearly all available cores (leaving one free)", style("⚠").yellow());
+            println!(
+                "{} Brutal mode: using nearly all available cores (leaving one free)",
+                style("⚠").yellow()
+            );
         }
         if args.powersave {
-            println!("{} Power-save mode: using efficiency cores only", style("🔋").green());
+            println!(
+                "{} Power-save mode: using efficiency cores only",
+                style("🔋").green()
+            );
         }
         if args.benchmark {
-            println!("{} Benchmark mode: keys will NOT be saved to disk", style("⚡").yellow());
+            println!(
+                "{} Benchmark mode: keys will NOT be saved to disk",
+                style("⚡").yellow()
+            );
         }
         let worker_count = args.workers.unwrap_or(cpu_cores);
-        
-        println!("{} Detected {} CPU cores, using {} workers", 
-                 style("ℹ").blue(), cpu_cores, worker_count);
-        println!("{} Pattern: {}", style("ℹ").blue(), pattern_config.description());
+
+        println!(
+            "{} Detected {} CPU cores, using {} workers",
+            style("ℹ").blue(),
+            cpu_cores,
+            worker_count
+        );
+        println!(
+            "{} Pattern: {}",
+            style("ℹ").blue(),
+            pattern_config.description()
+        );
         println!("{} Target: {} key(s)", style("ℹ").blue(), args.target_keys);
-        
+
         if verify {
-            println!("{} MeshCore verification: {}", style("ℹ").blue(), style("ENABLED").green());
+            println!(
+                "{} MeshCore verification: {}",
+                style("ℹ").blue(),
+                style("ENABLED").green()
+            );
         }
-        
+
         if !existing_keys.is_empty() {
-            println!("{} Loaded {} existing keys (will skip duplicates)", 
-                     style("ℹ").blue(), existing_keys.len());
+            println!(
+                "{} Loaded {} existing keys (will skip duplicates)",
+                style("ℹ").blue(),
+                existing_keys.len()
+            );
         }
-        
+
         #[cfg(target_os = "macos")]
         if args.gpu {
-            println!("{} Metal GPU acceleration: {}", style("ℹ").blue(), style("ENABLED").green());
+            println!(
+                "{} Metal GPU acceleration: {}",
+                style("ℹ").blue(),
+                style("ENABLED").green()
+            );
         }
-        
+
         println!();
     }
 
@@ -219,14 +256,14 @@ fn main() {
     let found_count = Arc::new(AtomicU64::new(0));
     let total_attempts = Arc::new(AtomicU64::new(0));
     let should_stop = Arc::new(AtomicBool::new(false));
-    
+
     // Progress display (only if not JSON mode)
     let progress_bar = if !args.json {
         let pb = ProgressBar::new_spinner();
         pb.set_style(
             ProgressStyle::default_spinner()
                 .template("{spinner:.green} [{elapsed_precise}] {msg}")
-                .unwrap()
+                .unwrap(),
         );
         pb.enable_steady_tick(Duration::from_millis(100));
         Some(pb)
@@ -235,10 +272,10 @@ fn main() {
     };
 
     let start_time = Instant::now();
-    
+
     // Channel for found keys
     let (tx, rx) = crossbeam_channel::unbounded::<KeyInfo>();
-    
+
     // Start worker pool
     let mut worker_pool = WorkerPool::new(
         worker_count,
@@ -247,7 +284,7 @@ fn main() {
         total_attempts.clone(),
         should_stop.clone(),
     );
-    
+
     #[cfg(target_os = "macos")]
     if args.gpu {
         worker_pool.enable_gpu();
@@ -263,62 +300,79 @@ fn main() {
 
     // Snapshot per-worker counters for live stats
     let worker_counters = worker_pool.attempts_per_worker_snapshot();
-    let mut prev_worker_totals: Vec<u64> = worker_counters.iter().map(|c| c.load(Ordering::Relaxed)).collect();
+    let mut prev_worker_totals: Vec<u64> = worker_counters
+        .iter()
+        .map(|c| c.load(Ordering::Relaxed))
+        .collect();
     let mut prev_sample = Instant::now();
     // Per-core EMA (exponential moving average) to smooth instant rate spikes/zeros
     // Sliding window of recent instantaneous samples per core to compute a short-term average
     let window_size: usize = 6; // average over last 6 samples
-    let mut per_core_windows: Vec<Vec<f64>> = vec![vec![0.0f64; window_size]; worker_counters.len()];
+    let mut per_core_windows: Vec<Vec<f64>> =
+        vec![vec![0.0f64; window_size]; worker_counters.len()];
     let mut window_idx: usize = 0;
-    
+
     // Collect found keys with their output info
     let mut found_keys: Vec<KeyOutput> = Vec::new();
     let mut known_keys: HashSet<String> = existing_keys;
     let target = args.target_keys;
-    let max_time = if args.max_time > 0 { Some(Duration::from_secs(args.max_time)) } else { None };
-    
+    let max_time = if args.max_time > 0 {
+        Some(Duration::from_secs(args.max_time))
+    } else {
+        None
+    };
+
     loop {
         // Check for found keys
         while let Ok(key) = rx.try_recv() {
             // Check if this key already exists
             if known_keys.contains(&key.public_hex) {
                 if args.verbose && !args.json {
-                    eprintln!("{} Skipping duplicate key: {}", style("⚠").yellow(), &key.public_hex[..16]);
+                    eprintln!(
+                        "{} Skipping duplicate key: {}",
+                        style("⚠").yellow(),
+                        &key.public_hex[..16]
+                    );
                 }
                 continue;
             }
-            
+
             // Verify key for MeshCore compatibility if requested
             let validation = if verify {
                 keygen::validate_for_meshcore(&key)
             } else {
-                keygen::ValidationResult { valid: true, reason: None }
+                keygen::ValidationResult {
+                    valid: true,
+                    reason: None,
+                }
             };
 
             // Skip invalid keys if verification is enabled
             if verify && !validation.valid {
                 if args.verbose && !args.json {
-                    eprintln!("{} Skipping invalid key: {} - {}", 
-                             style("⚠").yellow(), 
-                             &key.public_hex[..16],
-                             validation.reason.as_deref().unwrap_or("unknown"));
+                    eprintln!(
+                        "{} Skipping invalid key: {} - {}",
+                        style("⚠").yellow(),
+                        &key.public_hex[..16],
+                        validation.reason.as_deref().unwrap_or("unknown")
+                    );
                 }
                 continue;
             }
-            
+
             found_count.fetch_add(1, Ordering::Relaxed);
             let count = found_count.load(Ordering::Relaxed) as usize;
-            
+
             // Mark this key as known
             known_keys.insert(key.public_hex.clone());
-            
+
             // Save the key (skip in benchmark mode)
             let saved = if args.benchmark {
                 None
             } else {
-                save_key(&key, &output_dir, count as usize, args.prefix.as_deref())
+                save_key(&key, &output_dir, count, args.prefix.as_deref())
             };
-            
+
             // Create output record
             let key_output = KeyOutput {
                 index: count,
@@ -332,14 +386,26 @@ fn main() {
                 public_file: saved.as_ref().map(|(p, _)| p.clone()),
                 private_file: saved.as_ref().map(|(_, p)| p.clone()),
             };
-            
+
             if !args.json {
                 if let Some(ref pb) = progress_bar {
                     pb.suspend(|| {
                         println!();
-                        println!("{}", style("════════════════════════════════════════════════════════════").green());
-                        println!("{} Found matching key #{}", style("✓").green().bold(), count);
-                        println!("{}", style("════════════════════════════════════════════════════════════").green());
+                        println!(
+                            "{}",
+                            style("════════════════════════════════════════════════════════════")
+                                .green()
+                        );
+                        println!(
+                            "{} Found matching key #{}",
+                            style("✓").green().bold(),
+                            count
+                        );
+                        println!(
+                            "{}",
+                            style("════════════════════════════════════════════════════════════")
+                                .green()
+                        );
                         println!("  Public Key:  {}", style(&key.public_hex).yellow());
                         println!("  First 8:     {}", style(&key.public_hex[..8]).cyan());
                         println!("  Last 8:      {}", style(&key.public_hex[56..]).cyan());
@@ -348,9 +414,11 @@ fn main() {
                             if validation.valid {
                                 println!("  MeshCore:    {}", style("✓ Valid").green());
                             } else {
-                                println!("  MeshCore:    {} {}", 
-                                        style("✗ Invalid").red(),
-                                        validation.reason.as_deref().unwrap_or(""));
+                                println!(
+                                    "  MeshCore:    {} {}",
+                                    style("✗ Invalid").red(),
+                                    validation.reason.as_deref().unwrap_or("")
+                                );
                             }
                         }
                         if let Some((pub_path, priv_path)) = &saved {
@@ -362,14 +430,14 @@ fn main() {
                     });
                 }
             }
-            
+
             found_keys.push(key_output);
-            
+
             if found_keys.len() >= target {
                 should_stop.store(true, Ordering::Relaxed);
             }
         }
-        
+
         // Update progress
         let attempts = total_attempts.load(Ordering::Relaxed);
         let elapsed = start_time.elapsed();
@@ -378,10 +446,13 @@ fn main() {
         } else {
             0.0
         };
-        
+
         // Sample per-worker and GPU instantaneous rates
         let now_sample = Instant::now();
-        let dt = now_sample.duration_since(prev_sample).as_secs_f64().max(1e-6);
+        let dt = now_sample
+            .duration_since(prev_sample)
+            .as_secs_f64()
+            .max(1e-6);
         let mut per_core_rates: Vec<f64> = Vec::with_capacity(worker_counters.len());
         for (i, c) in worker_counters.iter().enumerate() {
             let cur = c.load(Ordering::Relaxed);
@@ -403,10 +474,14 @@ fn main() {
             {
                 if args.gpu {
                     gpu_counter.load(Ordering::Relaxed) as f64 / elapsed.as_secs_f64().max(1e-6)
-                } else { 0.0 }
+                } else {
+                    0.0
+                }
             }
-            #[cfg(not(target_os = "macos") )]
-            { 0.0 }
+            #[cfg(not(target_os = "macos"))]
+            {
+                0.0
+            }
         };
 
         // Total instantaneous rate approximate (sum per-core + gpu)
@@ -414,38 +489,56 @@ fn main() {
 
         // Estimate probability/time to finish
         let prob_per_attempt = pattern_config.estimated_probability();
-        let remaining = if target > found_keys.len() { target - found_keys.len() } else { 0 };
+        let remaining = if target > found_keys.len() {
+            target - found_keys.len()
+        } else {
+            0
+        };
         let eta_seconds = if prob_per_attempt > 0.0 && total_inst_rate > 0.0 {
             let attempts_per_key = 1.0 / prob_per_attempt;
             let expected_attempts = attempts_per_key * (remaining as f64);
             expected_attempts / total_inst_rate
-        } else { f64::INFINITY };
+        } else {
+            f64::INFINITY
+        };
 
         // Format per-core rates into short fixed-width colored string using compact notation
         let total_physical = num_cpus::get();
         let perf_count = detect_perf_cores_count();
         let efficiency_count = total_physical.saturating_sub(perf_count);
 
-        let per_core_str = per_core_rates.iter().enumerate().map(|(i,r)| {
-            let label = format!("c{:02}:", i+1);
-            let val = format_compact_f64(*r);
-            // pad to fixed width for alignment
-            let padded = format!("{:>6}", val);
-            let label_s = format!("{}", style(label).cyan());
-            let count_s = if args.brutal {
-                // color perf cores red, efficiency green
-                if i >= efficiency_count { format!("{}", style(padded).red()) } else { format!("{}", style(padded).green()) }
-            } else {
-                format!("{}", style(padded).green())
-            };
-            format!("{}{}", label_s, count_s)
-        }).collect::<Vec<_>>().join(" ");
+        let per_core_str = per_core_rates
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let label = format!("c{:02}:", i + 1);
+                let val = format_compact_f64(*r);
+                // pad to fixed width for alignment
+                let padded = format!("{:>6}", val);
+                let label_s = format!("{}", style(label).cyan());
+                let count_s = if args.brutal {
+                    // color perf cores red, efficiency green
+                    if i >= efficiency_count {
+                        format!("{}", style(padded).red())
+                    } else {
+                        format!("{}", style(padded).green())
+                    }
+                } else {
+                    format!("{}", style(padded).green())
+                };
+                format!("{}{}", label_s, count_s)
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
 
         if let Some(ref pb) = progress_bar {
             let eta_display = if eta_seconds.is_finite() {
-                let et = chrono::Local::now() + chrono::Duration::seconds(eta_seconds.round() as i64);
+                let et =
+                    chrono::Local::now() + chrono::Duration::seconds(eta_seconds.round() as i64);
                 format!("ETA {}", et.format("%Y-%m-%d %H:%M:%S"))
-            } else { "ETA ∞".to_string() };
+            } else {
+                "ETA ∞".to_string()
+            };
 
             let attempts_s = format_compact_u64(attempts);
             let rate_s = format_compact_f64(total_inst_rate);
@@ -456,16 +549,23 @@ fn main() {
                 // Beautiful mode: cleaner multi-line style statistics
                 let progress_pct = if target > 0 {
                     (found_count.load(Ordering::Relaxed) as f64 / target as f64 * 100.0).min(100.0)
-                } else { 0.0 };
-                
+                } else {
+                    0.0
+                };
+
                 // Show aggregate CPU rate and GPU rate separately
                 let cpu_rate: f64 = per_core_rates.iter().sum();
-                
-                let mode_str = if args.benchmark { format!("{}", style("[BENCHMARK]").yellow()) } 
-                               else if args.powersave { format!("{}", style("[POWERSAVE]").green()) }
-                               else if args.brutal { format!("{}", style("[BRUTAL]").red()) }
-                               else { "".to_string() };
-                
+
+                let mode_str = if args.benchmark {
+                    format!("{}", style("[BENCHMARK]").yellow())
+                } else if args.powersave {
+                    format!("{}", style("[POWERSAVE]").green())
+                } else if args.brutal {
+                    format!("{}", style("[BRUTAL]").red())
+                } else {
+                    "".to_string()
+                };
+
                 pb.set_message(format!(
                     "{mode} {attempts:>10} attempts │ {rate:>8}/s │ Progress: {found}/{target} ({pct:>5.1}%) │ CPU:{cpu:>8}/s GPU:{gpu:>8}/s │ {eta}",
                     mode = mode_str,
@@ -491,12 +591,12 @@ fn main() {
                 ));
             }
         }
-        
+
         // Check stop conditions
         if should_stop.load(Ordering::Relaxed) {
             break;
         }
-        
+
         if let Some(max_dur) = max_time {
             if elapsed >= max_dur {
                 if !args.json {
@@ -506,17 +606,17 @@ fn main() {
                 break;
             }
         }
-        
+
         // Use configurable refresh interval for smoother display
         std::thread::sleep(Duration::from_millis(args.refresh_ms.max(50)));
     }
-    
+
     // Cleanup
     worker_pool.stop();
     if let Some(pb) = progress_bar {
         pb.finish_and_clear();
     }
-    
+
     // Summary
     let elapsed = start_time.elapsed();
     let attempts = total_attempts.load(Ordering::Relaxed);
@@ -525,9 +625,9 @@ fn main() {
     } else {
         0.0
     };
-    
+
     let valid_count = found_keys.iter().filter(|k| k.meshcore_valid).count();
-    
+
     if args.json {
         // Output JSON
         let summary = SummaryOutput {
@@ -541,43 +641,54 @@ fn main() {
         println!("{}", serde_json::to_string_pretty(&summary).unwrap());
     } else {
         println!();
-        println!("{}", style("═══════════════════════════════════════════════════════════").cyan());
-        println!("{}", style("                         SUMMARY                           ").cyan().bold());
-        println!("{}", style("═══════════════════════════════════════════════════════════").cyan());
+        println!(
+            "{}",
+            style("═══════════════════════════════════════════════════════════").cyan()
+        );
+        println!(
+            "{}",
+            style("                         SUMMARY                           ")
+                .cyan()
+                .bold()
+        );
+        println!(
+            "{}",
+            style("═══════════════════════════════════════════════════════════").cyan()
+        );
         println!("  Total Time:      {:.2}s", elapsed.as_secs_f64());
         println!("  Total Attempts:  {}", format_number(attempts));
         println!("  Average Rate:    {:.0} keys/sec", rate);
         println!("  Keys Found:      {}", found_keys.len());
-                if verify {
-                    println!("  Keys Valid:      {} (MeshCore compatible)", valid_count);
-                }
+        if verify {
+            println!("  Keys Valid:      {} (MeshCore compatible)", valid_count);
+        }
         println!();
     }
 }
 
 fn build_pattern_config(args: &Args) -> PatternConfig {
     let mut config = PatternConfig::default();
-    
+
     if let Some(prefix) = &args.prefix {
         config.mode = PatternMode::Prefix;
         config.prefix = Some(prefix.to_uppercase());
     }
-    
+
     if let Some(vanity) = args.vanity {
         config.mode = PatternMode::Vanity;
         config.vanity_length = vanity;
     }
-    
+
     if let Some(pattern) = args.pattern {
         config.mode = PatternMode::Pattern;
         config.vanity_length = pattern;
     }
-    
+
     // Combine prefix + vanity if both specified
     if args.prefix.is_some() && (args.vanity.is_some() || args.pattern.is_some()) {
         config.mode = PatternMode::PrefixVanity;
     }
-    
+
     config
 }
 
@@ -597,7 +708,10 @@ fn detect_cpu_cores(brutal: bool, powersave: bool) -> usize {
                 .args(["-n", "hw.perflevel1.physicalcpu"])
                 .output()
             {
-                if let Ok(cores) = String::from_utf8_lossy(&output.stdout).trim().parse::<usize>() {
+                if let Ok(cores) = String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .parse::<usize>()
+                {
                     if cores > 0 {
                         return cores;
                     }
@@ -613,7 +727,10 @@ fn detect_cpu_cores(brutal: bool, powersave: bool) -> usize {
             .args(["-n", "hw.perflevel0.physicalcpu"])
             .output()
         {
-            if let Ok(cores) = String::from_utf8_lossy(&output.stdout).trim().parse::<usize>() {
+            if let Ok(cores) = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .parse::<usize>()
+            {
                 return cores;
             }
         }
@@ -646,24 +763,29 @@ fn detect_perf_cores_count() -> usize {
             .args(["-n", "hw.perflevel0.physicalcpu"])
             .output()
         {
-            if let Ok(cores) = String::from_utf8_lossy(&output.stdout).trim().parse::<usize>() {
+            if let Ok(cores) = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .parse::<usize>()
+            {
                 return cores;
             }
         }
         0
     }
-    #[cfg(not(target_os = "macos") )]
+    #[cfg(not(target_os = "macos"))]
     {
         0
     }
 }
 
 /// Load existing public keys from the output directory to avoid duplicates
-fn load_existing_keys(output_dir: &PathBuf) -> HashSet<String> {
+use std::path::Path;
+
+fn load_existing_keys(output_dir: &Path) -> HashSet<String> {
     let mut keys = HashSet::new();
 
     // Recursively scan the provided directory for any files ending with `_public.txt`.
-    fn scan_dir(dir: &PathBuf, keys: &mut HashSet<String>) {
+    fn scan_dir(dir: &Path, keys: &mut HashSet<String>) {
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -690,7 +812,12 @@ fn load_existing_keys(output_dir: &PathBuf) -> HashSet<String> {
     keys
 }
 
-fn save_key(key: &KeyInfo, output_dir: &PathBuf, index: usize, filename_prefix: Option<&str>) -> Option<(String, String)> {
+fn save_key(
+    key: &KeyInfo,
+    output_dir: &Path,
+    index: usize,
+    filename_prefix: Option<&str>,
+) -> Option<(String, String)> {
     // If a user-supplied prefix is provided, prefer it as the filename prefix (uppercased).
     // Otherwise fall back to the first 8 hex chars of the public key.
     let pattern_id = if let Some(p) = filename_prefix {
@@ -703,20 +830,20 @@ fn save_key(key: &KeyInfo, output_dir: &PathBuf, index: usize, filename_prefix: 
     // Use a concise filename: <prefix>_<index>_<timestamp>_public|private.txt
     let pub_filename = format!("{}_{}_{}_public.txt", pattern_id, index, timestamp);
     let priv_filename = format!("{}_{}_{}_private.txt", pattern_id, index, timestamp);
-    
+
     let pub_path = output_dir.join(&pub_filename);
     let priv_path = output_dir.join(&priv_filename);
-    
+
     if let Err(e) = fs::write(&pub_path, &key.public_hex) {
         eprintln!("Failed to write public key: {}", e);
         return None;
     }
-    
+
     if let Err(e) = fs::write(&priv_path, &key.private_hex) {
         eprintln!("Failed to write private key: {}", e);
         return None;
     }
-    
+
     Some((pub_filename, priv_filename))
 }
 
@@ -732,7 +859,8 @@ mod main_filename_tests {
 
         // Build a dummy key
         let key = KeyInfo {
-            public_hex: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_string(),
+            public_hex: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+                .to_string(),
             private_hex: "00".repeat(64),
             public_bytes: [0xAB; 32],
             private_bytes: [0x00; 64],
@@ -741,7 +869,11 @@ mod main_filename_tests {
         let prefix = Some("abcd");
         let saved = save_key(&key, &out, 3, prefix).expect("save_key failed");
         let pub_name = saved.0;
-        assert!(pub_name.starts_with("ABCD_3_"), "pub filename didn't start with expected prefix: {}", pub_name);
+        assert!(
+            pub_name.starts_with("ABCD_3_"),
+            "pub filename didn't start with expected prefix: {}",
+            pub_name
+        );
     }
 
     #[test]
@@ -759,7 +891,10 @@ mod main_filename_tests {
         fs::write(&pub_path, key_hex).unwrap();
 
         let found = load_existing_keys(&base);
-        assert!(found.contains(&key_hex.to_string()), "load_existing_keys did not find the key in subdir");
+        assert!(
+            found.contains(key_hex),
+            "load_existing_keys did not find the key in subdir"
+        );
     }
 }
 
@@ -772,17 +907,17 @@ mod format_tests {
         // Small numbers stay as-is
         assert_eq!(format_compact_u64(0), "0");
         assert_eq!(format_compact_u64(999), "999");
-        
+
         // Thousands
         assert_eq!(format_compact_u64(1_000), "1.0k");
         assert_eq!(format_compact_u64(24_800), "24.8k");
         assert_eq!(format_compact_u64(999_999), "1000.0k");
-        
+
         // Millions
         assert_eq!(format_compact_u64(1_000_000), "1.0M");
         assert_eq!(format_compact_u64(1_200_000), "1.2M");
         assert_eq!(format_compact_u64(999_999_999), "1000.0M");
-        
+
         // Billions
         assert_eq!(format_compact_u64(1_000_000_000), "1.0B");
         assert_eq!(format_compact_u64(5_500_000_000), "5.5B");
@@ -793,18 +928,18 @@ mod format_tests {
         // Small numbers
         assert_eq!(format_compact_f64(0.0), "0");
         assert_eq!(format_compact_f64(999.0), "999");
-        
+
         // Thousands
         assert_eq!(format_compact_f64(1_000.0), "1.0k");
         assert_eq!(format_compact_f64(24_800.0), "24.8k");
-        
+
         // Millions
         assert_eq!(format_compact_f64(1_000_000.0), "1.0M");
         assert_eq!(format_compact_f64(1_200_000.0), "1.2M");
-        
+
         // Billions
         assert_eq!(format_compact_f64(1_000_000_000.0), "1.0B");
-        
+
         // Infinity
         assert_eq!(format_compact_f64(f64::INFINITY), "∞");
     }
@@ -835,7 +970,10 @@ mod cpu_detection_tests {
         // Brutal mode should return at least as many as normal
         let normal = detect_cpu_cores(false, false);
         let brutal = detect_cpu_cores(true, false);
-        assert!(brutal >= normal, "Brutal mode should use at least as many cores as normal");
+        assert!(
+            brutal >= normal,
+            "Brutal mode should use at least as many cores as normal"
+        );
     }
 
     #[test]
@@ -844,7 +982,10 @@ mod cpu_detection_tests {
         let normal = detect_cpu_cores(false, false);
         let powersave = detect_cpu_cores(false, true);
         assert!(powersave >= 1, "Powersave should use at least 1 core");
-        assert!(powersave <= normal, "Powersave should use at most as many cores as normal");
+        assert!(
+            powersave <= normal,
+            "Powersave should use at most as many cores as normal"
+        );
     }
 
     #[test]
@@ -854,7 +995,10 @@ mod cpu_detection_tests {
         let brutal = detect_cpu_cores(true, false);
         // They should be roughly the same (brutal wins)
         assert!(both >= 1);
-        assert_eq!(both, brutal, "When both flags set, brutal should take precedence");
+        assert_eq!(
+            both, brutal,
+            "When both flags set, brutal should take precedence"
+        );
     }
 }
 
@@ -911,19 +1055,19 @@ fn format_compact_f64(n: f64) -> String {
 fn run_tests() {
     println!("{}", style("Running tests...").cyan().bold());
     println!();
-    
+
     // Test 1: Key generation
     print!("Test 1: Key generation... ");
     let key = keygen::generate_meshcore_keypair();
     assert_eq!(key.public_hex.len(), 64);
     assert_eq!(key.private_hex.len(), 128);
     println!("{}", style("PASS").green());
-    
+
     // Test 2: Key verification
     print!("Test 2: Key verification... ");
     assert!(keygen::verify_key(&key));
     println!("{}", style("PASS").green());
-    
+
     // Test 3: MeshCore validation
     print!("Test 3: MeshCore validation... ");
     let mut valid_count = 0;
@@ -935,9 +1079,13 @@ fn run_tests() {
         }
     }
     // Most keys should be valid (only ~1.5% have 0x00 or 0xFF prefix)
-    assert!(valid_count > 90, "Expected >90% valid keys, got {}", valid_count);
+    assert!(
+        valid_count > 90,
+        "Expected >90% valid keys, got {}",
+        valid_count
+    );
     println!("{}", style("PASS").green());
-    
+
     // Test 4: Pattern matching - prefix
     print!("Test 4: Pattern matching (prefix)... ");
     let config = PatternConfig {
@@ -947,9 +1095,12 @@ fn run_tests() {
     };
     let test_hex = "AB1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF12345678";
     assert!(pattern::matches_pattern(test_hex, &config));
-    assert!(!pattern::matches_pattern("CD1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF12345678", &config));
+    assert!(!pattern::matches_pattern(
+        "CD1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF12345678",
+        &config
+    ));
     println!("{}", style("PASS").green());
-    
+
     // Test 5: Pattern matching - vanity
     print!("Test 5: Pattern matching (vanity)... ");
     let config = PatternConfig {
@@ -961,7 +1112,7 @@ fn run_tests() {
     let test_hex = "ABCD1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF12ABCD";
     assert!(pattern::matches_pattern(test_hex, &config));
     println!("{}", style("PASS").green());
-    
+
     // Test 6: Multiple key generation
     print!("Test 6: Multiple key generation... ");
     for _ in 0..100 {
@@ -969,7 +1120,7 @@ fn run_tests() {
         assert!(keygen::verify_key(&key));
     }
     println!("{}", style("PASS").green());
-    
+
     // Test 7: Key uniqueness
     print!("Test 7: Key uniqueness... ");
     let key1 = keygen::generate_meshcore_keypair();
@@ -977,7 +1128,7 @@ fn run_tests() {
     assert_ne!(key1.public_hex, key2.public_hex);
     assert_ne!(key1.private_hex, key2.private_hex);
     println!("{}", style("PASS").green());
-    
+
     // Test 8: Invalid prefix detection
     print!("Test 8: Invalid prefix detection... ");
     // A key with 0x00 prefix would be invalid
@@ -985,7 +1136,7 @@ fn run_tests() {
     assert!(!keygen::is_valid_meshcore_prefix(&[0x00; 32]));
     assert!(!keygen::is_valid_meshcore_prefix(&[0xFF; 32]));
     println!("{}", style("PASS").green());
-    
+
     println!();
     println!("{}", style("All tests passed!").green().bold());
 }
