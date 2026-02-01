@@ -679,7 +679,9 @@ mod tests {
 
     /// Test GPU batch size is reasonable
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn test_gpu_batch_size() {
+        // Runtime check suppressed for clippy as GPU_BATCH_SIZE is a compile-time constant.
         assert!(
             GPU_BATCH_SIZE >= 1024,
             "GPU batch size should be at least 1024 for efficiency"

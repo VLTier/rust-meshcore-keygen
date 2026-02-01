@@ -204,8 +204,8 @@ fn check_vanity_pattern(hex_bytes: &[u8], n: usize) -> bool {
 #[inline(always)]
 fn check_vanity_pattern_bytes(public_bytes: &[u8; 32], n_hex_chars: usize) -> bool {
     // Each byte = 2 hex chars
-    // For n hex chars, we need n/2 bytes
-    let n_bytes = (n_hex_chars + 1) / 2;
+    // For n hex chars, we need ceil(n/2) bytes
+    let n_bytes = n_hex_chars / 2 + (n_hex_chars % 2);
 
     match n_hex_chars {
         2 => {

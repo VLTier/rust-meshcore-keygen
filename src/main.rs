@@ -13,7 +13,7 @@ mod worker;
 use clap::Parser;
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
-use num_cpus;
+
 use serde::Serialize;
 use std::collections::HashSet;
 use std::fs;
@@ -160,7 +160,7 @@ fn main() {
 
     // Load existing keys to avoid duplicates. We scan the base output root (not the per-run subdir)
     let existing_keys = if args.skip_existing {
-        load_existing_keys(&base_output)
+        load_existing_keys(base_output.as_path())
     } else {
         HashSet::new()
     };
@@ -370,7 +370,7 @@ fn main() {
             let saved = if args.benchmark {
                 None
             } else {
-                save_key(&key, &output_dir, count as usize, args.prefix.as_deref())
+                save_key(&key, &output_dir, count, args.prefix.as_deref())
             };
 
             // Create output record
@@ -779,11 +779,13 @@ fn detect_perf_cores_count() -> usize {
 }
 
 /// Load existing public keys from the output directory to avoid duplicates
-fn load_existing_keys(output_dir: &PathBuf) -> HashSet<String> {
+use std::path::Path;
+
+fn load_existing_keys(output_dir: &Path) -> HashSet<String> {
     let mut keys = HashSet::new();
 
     // Recursively scan the provided directory for any files ending with `_public.txt`.
-    fn scan_dir(dir: &PathBuf, keys: &mut HashSet<String>) {
+    fn scan_dir(dir: &Path, keys: &mut HashSet<String>) {
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -812,7 +814,7 @@ fn load_existing_keys(output_dir: &PathBuf) -> HashSet<String> {
 
 fn save_key(
     key: &KeyInfo,
-    output_dir: &PathBuf,
+    output_dir: &Path,
     index: usize,
     filename_prefix: Option<&str>,
 ) -> Option<(String, String)> {
@@ -890,7 +892,7 @@ mod main_filename_tests {
 
         let found = load_existing_keys(&base);
         assert!(
-            found.contains(&key_hex.to_string()),
+            found.contains(key_hex),
             "load_existing_keys did not find the key in subdir"
         );
     }

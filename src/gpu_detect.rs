@@ -252,10 +252,8 @@ pub fn get_best_backend() -> GpuBackend {
 pub fn get_best_backend_for_vendor(vendor: &str) -> GpuBackend {
     let vendor_lower = vendor.to_lowercase();
 
-    if vendor_lower.contains("apple") {
-        if is_metal_available() {
-            return GpuBackend::Metal;
-        }
+    if vendor_lower.contains("apple") && is_metal_available() {
+        return GpuBackend::Metal;
     }
 
     if vendor_lower.contains("nvidia") {

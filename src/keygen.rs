@@ -39,7 +39,7 @@ pub fn generate_meshcore_keypair() -> KeyInfo {
 
     // Step 2: SHA512 hash the seed
     let mut hasher = Sha512::new();
-    hasher.update(&seed);
+    hasher.update(seed);
     let digest: [u8; 64] = hasher.finalize().into();
 
     // Step 3: Clamp the first 32 bytes
@@ -256,7 +256,7 @@ pub fn generate_batch(count: usize) -> Vec<KeyInfo> {
         rng.fill_bytes(&mut seed);
 
         let mut hasher = Sha512::new();
-        hasher.update(&seed);
+        hasher.update(seed);
         let digest: [u8; 64] = hasher.finalize().into();
 
         let mut clamped = [0u8; 32];
