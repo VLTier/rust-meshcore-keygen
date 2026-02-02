@@ -33,7 +33,7 @@ crossbeam-channel = "0.5"
 
 # Progress and formatting
 indicatif = { version = "0.18", features = ["rayon"] }
-console = "0.15"
+console = "0.16"
 
 # System info
 sysinfo = "0.38"
