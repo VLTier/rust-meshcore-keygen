@@ -70,7 +70,7 @@ jobs:
           fi
 
       - name: Create GitHub release asset
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           files: |
@@ -99,7 +99,7 @@ jobs:
           cat checksums-sha256.txt
 
       - name: Upload checksums
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           files: release-assets/checksums-sha256.txt
