@@ -32,7 +32,7 @@ num_cpus = "1.16"
 crossbeam-channel = "0.5"
 
 # Progress and formatting
-indicatif = { version = "0.17", features = ["rayon"] }
+indicatif = { version = "0.18", features = ["rayon"] }
 console = "0.15"
 
 # System info
