@@ -8,6 +8,7 @@ mod keygen;
 #[cfg(target_os = "macos")]
 mod metal_gpu;
 mod pattern;
+mod storage;
 mod worker;
 
 use clap::Parser;
@@ -131,6 +132,34 @@ struct Args {
     /// Run tests
     #[arg(long)]
     test: bool,
+
+    /// Enable key storage to database
+    #[arg(long, default_value_t = false)]
+    storage: bool,
+
+    /// Database file path for key storage (default: meshcore-keys.db)
+    #[arg(long, default_value = "meshcore-keys.db")]
+    db_path: PathBuf,
+
+    /// Store all generated keys, not just pattern matches
+    #[arg(long, default_value_t = false)]
+    store_all: bool,
+
+    /// Check database for existing keys matching pattern before generating
+    #[arg(long, default_value_t = false)]
+    check_storage: bool,
+
+    /// Display storage statistics
+    #[arg(long, default_value_t = false)]
+    stats: bool,
+
+    /// Background mode: generate keys continuously without pattern matching
+    #[arg(long, default_value_t = false)]
+    background: bool,
+
+    /// Add tag to generated keys
+    #[arg(long)]
+    tag: Option<String>,
 }
 
 fn main() {
