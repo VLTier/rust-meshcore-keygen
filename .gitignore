@@ -3,3 +3,9 @@
 # Ignore timestamped output folders created by meshcore-keygen (e.g. 20260131_142127/)
 20[0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]/
 **/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]/
+
+# Ignore key storage databases (SECURITY: Never commit private keys!)
+*.json
+meshcore-keys*
+*.db
+*.sqlite
