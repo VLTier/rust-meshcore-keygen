@@ -22,6 +22,7 @@ Beyond the original, this vibecoded version adds:
 - **`--powersave` Mode** — Reduce CPU usage for background operation
 - **`--brutal` Mode** — Use maximum CPU cores for peak performance
 - **`--beautiful` Mode** — Rich Unicode TUI with animated progress display
+- **Key Pair Storage** — Store, search, and manage generated keys in a portable database
 - **10-100x Performance** — From ~6,000 keys/sec (Python) to 500,000+ keys/sec (Rust)
 - **Single Binary** — No Python interpreter or dependencies needed
 - **CI/CD Pipeline** — Automated builds for Linux, macOS, and Windows
@@ -41,6 +42,60 @@ A high-performance Ed25519 vanity key generator for MeshCore nodes, written in R
 - **Automatic Key Saving**: Creates speaking filenames for each found key
 - **MeshCore Compatible**: Generates keys in the exact format MeshCore expects
 - **Power Modes**: Choose between powersave, default, or brutal CPU usage
+- **Key Pair Storage**: Store and manage generated keys in a searchable database
+
+## Key Pair Storage
+
+Build a library of generated keys for later use, search existing keys, and manage your key collection:
+
+### Quick Start
+
+```bash
+# Store keys as you find them
+./target/release/meshcore-keygen --storage --pattern 4 -n 10
+
+# Build a key library in the background
+./target/release/meshcore-keygen --storage --store-all --background --powersave
+
+# Check if a pattern already exists before generating
+./target/release/meshcore-keygen --storage --check-storage --pattern 6
+
+# View your key collection statistics
+./target/release/meshcore-keygen --stats
+```
+
+### Storage Features
+
+- **Save All Keys**: Store every generated key, not just pattern matches
+- **Fast Search**: O(1) lookups by pattern, prefix, or tag
+- **Tagging System**: Organize keys with custom labels
+- **Statistics**: Track generation progress and key distribution
+- **Portable Format**: JSON file, easy to backup and share
+- **Secure**: File permissions and encryption recommendations
+- **Background Mode**: Generate keys continuously with low CPU impact
+
+### Storage Options
+
+```
+  --storage                Enable key storage to database
+  --db-path <PATH>         Database file path [default: meshcore-keys.db]
+  --store-all              Store all generated keys (not just pattern matches)
+  --check-storage          Check database for existing keys before generating
+  --stats                  Display storage statistics
+  --background             Continuous generation mode (use with --storage --store-all)
+  --tag <TAG>              Add tag to generated keys
+```
+
+### Storage Security
+
+⚠️ **IMPORTANT**: The storage file contains PRIVATE KEYS!
+
+- Set restrictive file permissions: `chmod 600 meshcore-keys.db`
+- Store on encrypted volume if possible
+- Never commit to version control (pre-configured in .gitignore)
+- Encrypt before sharing: `gpg -c meshcore-keys.db`
+
+For detailed documentation, see [STORAGE_FEATURE.md](./STORAGE_FEATURE.md).
 
 ## Installation
 
@@ -101,6 +156,16 @@ Options:
       --beautiful          Beautiful display mode with enhanced statistics
       --refresh-ms <MS>    Display refresh interval in milliseconds [default: 500]
       --test               Run built-in tests
+      
+Storage Options:
+      --storage            Enable key storage to database
+      --db-path <PATH>     Database file path [default: meshcore-keys.db]
+      --store-all          Store all generated keys, not just pattern matches
+      --check-storage      Check database for existing keys before generating
+      --stats              Display storage statistics
+      --background         Continuous generation mode (use with --storage --store-all)
+      --tag <TAG>          Add tag to generated keys
+      
   -h, --help               Print help
   -V, --version            Print version
 ```

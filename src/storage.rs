@@ -7,6 +7,8 @@
 //! - Export/import capabilities
 //! - Future: Can be upgraded to SQLite when dependencies are available
 
+#![allow(dead_code)] // Storage integration pending - see TODO_STORAGE.md
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -501,7 +503,6 @@ mod hostname {
     pub fn get() -> Result<OsString, ()> {
         #[cfg(unix)]
         {
-            use std::ffi::CStr;
             let mut buf = vec![0u8; 256];
             unsafe {
                 if libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) == 0 {
