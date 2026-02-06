@@ -9,9 +9,9 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -454,7 +454,12 @@ impl KeyStorage {
         db.prefix_index.clear();
         db.tag_index.clear();
         
-        for (pub_key, metadata) in &db.keys {
+        // Collect keys data first to avoid borrowing issues
+        let keys_data: Vec<_> = db.keys.iter()
+            .map(|(pub_key, metadata)| (pub_key.clone(), metadata.clone()))
+            .collect();
+        
+        for (pub_key, metadata) in keys_data {
             // Pattern index
             if let Some(ref pattern) = metadata.pattern_matched {
                 db.pattern_index
