@@ -44,7 +44,7 @@ ocl = { version = "0.19", optional = true }
 
 # Metal GPU (macOS only)
 [target.'cfg(target_os = "macos")'.dependencies]
-metal = "0.29"
+metal = "0.33"
 objc = "0.2"
 block = "0.1"
 
