@@ -17,7 +17,7 @@ gpu-opencl = ["ocl"]   # Cross-platform OpenCL (NVIDIA, AMD, Intel)
 # Ed25519 cryptography
 curve25519-dalek = { version = "4", features = ["digest"] }
 sha2 = "0.10"
-rand = "0.8"
+rand = "0.9"
 
 # CLI and output
 clap = { version = "4", features = ["derive"] }
